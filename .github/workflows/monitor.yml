@@ -20,6 +20,8 @@ jobs:
 
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -31,6 +33,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Verify Snapshot
+        run: |
+          ls -R
+          echo "-----"
+          if [ -f snapshots/snapshot.json ]; then
+            echo "Snapshot exists"
+            wc -c snapshots/snapshot.json
+          else
+            echo "Snapshot missing"
+          fi
+
       - name: Run Tracker
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
@@ -41,7 +54,7 @@ jobs:
       - name: Check for Changes
         id: changes
         run: |
-          git diff --quiet snapshot.json || echo "changed=true" >> $GITHUB_OUTPUT
+          git diff --quiet snapshots/snapshot.json || echo "changed=true" >> $GITHUB_OUTPUT
 
       - name: Commit Snapshot
         if: steps.changes.outputs.changed == 'true'
@@ -49,8 +62,8 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          git add snapshot.json
+          git add snapshots/snapshot.json
 
-          git commit -m "Update snapshot"
+          git commit -m "Update snapshot" || echo "Nothing to commit"
 
           git push
