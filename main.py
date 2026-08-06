@@ -1,174 +1,129 @@
 """
+HMT Watch Tracker
+
 Main Entry Point
 """
 
-import os
-import shutil
+from compare import Comparator
+from notifier import Notifier
 
-from config import (
-    SNAPSHOT_FILE,
-    NEW_SNAPSHOT_FILE,
+from scrapers import (
+    HMTStoreScraper,
+    HMTOfficialScraper,
 )
 
-from scraper import Scraper
-
-from snapshot import (
-    load_snapshot,
-    save_snapshot,
-)
-
-from comparator import compare
-
-from telegram import Telegram
+from storage import SnapshotManager
 
 
 def main():
 
-    telegram = Telegram()
+    print("=" * 60)
+    print("HMT WATCH TRACKER")
+    print("=" * 60)
 
-    scraper = Scraper()
+    ########################################################
+    # Load Previous Snapshot
+    ########################################################
 
-    scraper.start()
+    snapshot = SnapshotManager()
 
-    try:
+    previous = snapshot.load()
 
-        print("=" * 60)
-        print("WATCH TRACKER")
-        print("=" * 60)
+    print(f"Previous Snapshot : {len(previous)} watches")
 
-        if os.path.exists(SNAPSHOT_FILE):
+    ########################################################
+    # Scrape Websites
+    ########################################################
 
-            previous = load_snapshot(
-                SNAPSHOT_FILE
-            )
+    current = {}
 
-            print(
-                f"Loaded {len(previous)} previous watches"
-            )
+    #
+    # HMT Store
+    #
 
-        else:
+    store = HMTStoreScraper()
 
-            previous = {}
+    current.update(
+        store.scrape()
+    )
 
-            print(
-                "No previous snapshot found."
-            )
+    #
+    # Official Website
+    #
 
-        current = scraper.scrape()
+    official = HMTOfficialScraper()
 
-        print(
-            f"Scraped {len(current)} watches"
-        )
+    current.update(
+        official.scrape()
+    )
 
-        save_snapshot(
-            NEW_SNAPSHOT_FILE,
-            current
-        )
+    print(f"Current Watches : {len(current)}")
 
-        if len(current) == 0:
+    ########################################################
+    # Compare
+    ########################################################
 
-            print("Scraping failed.")
+    comparator = Comparator()
 
-            return
+    result = comparator.compare(
+        previous,
+        current
+    )
 
-        if len(previous) == 0:
+    ########################################################
+    # Update History
+    ########################################################
 
-            print(
-                "First run. Creating baseline snapshot."
-            )
+    current = snapshot.update_history(
+        previous,
+        result.updated
+    )
 
-            shutil.copy(
-                NEW_SNAPSHOT_FILE,
-                SNAPSHOT_FILE
-            )
+    ########################################################
+    # Send Notifications
+    ########################################################
 
-            return
+    notifier = Notifier()
 
-        (
-            new_watches,
-            sold_watches,
-            price_changes,
-            stock_changes,
-        ) = compare(
-            previous,
-            current,
-        )
+    notifier.send_result(
+        result
+    )
 
-        print(
-            f"New : {len(new_watches)}"
-        )
+    ########################################################
+    # Save Snapshot
+    ########################################################
 
-        print(
-            f"Sold : {len(sold_watches)}"
-        )
+    snapshot.save(
+        current
+    )
 
-        print(
-            f"Price Changed : {len(price_changes)}"
-        )
+    ########################################################
+    # Summary
+    ########################################################
 
-        print(
-            f"Stock Changed : {len(stock_changes)}"
-        )
+    print()
 
-        ##################################
+    print("=" * 60)
 
-        for watch in new_watches.values():
+    print("SUMMARY")
 
-            telegram.new_watch(
-                watch
-            )
+    print("=" * 60)
 
-        ##################################
+    print(f"New Watches      : {len(result.new)}")
 
-        for watch in sold_watches.values():
+    print(f"Removed Watches  : {len(result.removed)}")
 
-            telegram.sold_out(
-                watch
-            )
+    print(f"Back In Stock    : {len(result.back_in_stock)}")
 
-        ##################################
+    print(f"Sold Out         : {len(result.sold_out)}")
 
-        for item in price_changes:
+    print(f"Price Changes    : {len(result.price_changed)}")
 
-            telegram.price_changed(
+    print()
 
-                item["watch"],
+    print("Snapshot Updated.")
 
-                item["old_price"],
-
-                item["new_price"]
-
-            )
-
-        ##################################
-
-        for item in stock_changes:
-
-            telegram.stock_changed(
-
-                item["watch"],
-
-                item["old_stock"],
-
-                item["new_stock"]
-
-            )
-
-        ##################################
-
-        shutil.copy(
-
-            NEW_SNAPSHOT_FILE,
-
-            SNAPSHOT_FILE
-
-        )
-
-        print("Snapshot Updated.")
-
-    finally:
-
-        scraper.stop()
+    print("=" * 60)
 
 
 if __name__ == "__main__":

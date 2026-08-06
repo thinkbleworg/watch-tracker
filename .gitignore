@@ -1,8 +1,7 @@
 # Python
 __pycache__/
-*.py[c]
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
 
 # Virtual Environment
 .venv/
@@ -12,26 +11,34 @@ env/
 # VS Code
 .vscode/
 
-# JetBrains IDEs
+# JetBrains
 .idea/
 
 # Logs
+logs/
 *.log
 
-# OS files
-.DS_Store
-Thumbs.db
+# Snapshots (optional)
+# Uncomment if you don't want GitHub to version snapshots
+# snapshots/
 
-# Playwright
-playwright-report/
-test-results/
-
-# Environment files
+# Environment
 .env
 
-# Temporary files
-*.tmp
+# macOS
+.DS_Store
 
-# JSON files
-snapshot.json
-snapshot_new.json
+# Windows
+Thumbs.db
+
+# pytest
+.pytest_cache/
+
+# Coverage
+.coverage
+htmlcov/
+
+# Build
+dist/
+build/
+*.egg-info/
