@@ -7,6 +7,10 @@ on:
   schedule:
     - cron: "*/5 * * * *"
 
+concurrency:
+  group: hmt-watch-tracker
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
