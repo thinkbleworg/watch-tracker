@@ -1,61 +1,176 @@
-from config import URLS
+"""
+Main Entry Point
+"""
 
-from scraper import scrape_all
-from snapshot import load_snapshot
-from snapshot import save_snapshot
+import os
+import shutil
+
+from config import (
+    SNAPSHOT_FILE,
+    NEW_SNAPSHOT_FILE,
+)
+
+from scraper import Scraper
+
+from snapshot import (
+    load_snapshot,
+    save_snapshot,
+)
+
 from comparator import compare
-from telegram import send_message
+
+from telegram import Telegram
 
 
 def main():
 
-    print("Loading snapshot...")
+    telegram = Telegram()
 
-    old_products = load_snapshot()
+    scraper = Scraper()
 
-    print("Scraping websites...")
+    scraper.start()
 
-    current_products = scrape_all(URLS)
+    try:
 
-    print(f"Current products: {len(current_products)}")
+        print("=" * 60)
+        print("WATCH TRACKER")
+        print("=" * 60)
 
-    new_watches, sold_watches = compare(
-        old_products,
-        current_products
-    )
+        if os.path.exists(SNAPSHOT_FILE):
 
-    if new_watches:
+            previous = load_snapshot(
+                SNAPSHOT_FILE
+            )
 
-        message = "🟢 NEW WATCHES\n\n"
+            print(
+                f"Loaded {len(previous)} previous watches"
+            )
+
+        else:
+
+            previous = {}
+
+            print(
+                "No previous snapshot found."
+            )
+
+        current = scraper.scrape()
+
+        print(
+            f"Scraped {len(current)} watches"
+        )
+
+        save_snapshot(
+            NEW_SNAPSHOT_FILE,
+            current
+        )
+
+        if len(current) == 0:
+
+            print("Scraping failed.")
+
+            return
+
+        if len(previous) == 0:
+
+            print(
+                "First run. Creating baseline snapshot."
+            )
+
+            shutil.copy(
+                NEW_SNAPSHOT_FILE,
+                SNAPSHOT_FILE
+            )
+
+            return
+
+        (
+            new_watches,
+            sold_watches,
+            price_changes,
+            stock_changes,
+        ) = compare(
+            previous,
+            current,
+        )
+
+        print(
+            f"New : {len(new_watches)}"
+        )
+
+        print(
+            f"Sold : {len(sold_watches)}"
+        )
+
+        print(
+            f"Price Changed : {len(price_changes)}"
+        )
+
+        print(
+            f"Stock Changed : {len(stock_changes)}"
+        )
+
+        ##################################
 
         for watch in new_watches.values():
 
-            message += f"{watch['name']}\n"
+            telegram.new_watch(
+                watch
+            )
 
-            message += f"{watch['url']}\n\n"
-
-        send_message(message)
-
-        print("New watches alert sent")
-
-    if sold_watches:
-
-        message = "🔴 SOLD OUT\n\n"
+        ##################################
 
         for watch in sold_watches.values():
 
-            message += f"{watch['name']}\n"
+            telegram.sold_out(
+                watch
+            )
 
-            message += f"{watch['url']}\n\n"
+        ##################################
 
-        send_message(message)
+        for item in price_changes:
 
-        print("Sold out alert sent")
+            telegram.price_changed(
 
-    save_snapshot(current_products)
+                item["watch"],
 
-    print("Snapshot updated")
+                item["old_price"],
+
+                item["new_price"]
+
+            )
+
+        ##################################
+
+        for item in stock_changes:
+
+            telegram.stock_changed(
+
+                item["watch"],
+
+                item["old_stock"],
+
+                item["new_stock"]
+
+            )
+
+        ##################################
+
+        shutil.copy(
+
+            NEW_SNAPSHOT_FILE,
+
+            SNAPSHOT_FILE
+
+        )
+
+        print("Snapshot Updated.")
+
+    finally:
+
+        scraper.stop()
 
 
 if __name__ == "__main__":
+
     main()

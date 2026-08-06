@@ -1,76 +1,313 @@
-from playwright.sync_api import sync_playwright
+"""
+Scraper Module
+
+Scrapes
+
+1. https://www.hmtwatches.store/all-products
+
+2. https://hmtwatches.in/mens
+"""
+
+import time
+
+from playwright.sync_api import (
+    sync_playwright,
+    TimeoutError,
+)
+
+from urllib.parse import urljoin
+
+from config import (
+    HEADLESS,
+    PAGE_TIMEOUT,
+    WAIT_AFTER_LOAD,
+    USER_AGENT,
+    MAX_RETRIES,
+    RETRY_DELAY,
+)
+
+from models import Watch
 
 
-def scrape_site(url):
+class Scraper:
 
-    products = {}
+    def __init__(self):
 
-    with sync_playwright() as p:
+        self.browser = None
 
-        browser = p.chromium.launch(headless=True)
+        self.page = None
 
-        page = browser.new_page()
+    def start(self):
 
-        page.goto(url, wait_until="networkidle")
+        self.playwright = sync_playwright().start()
 
-        page.wait_for_timeout(5000)
+        self.browser = self.playwright.chromium.launch(
+            headless=HEADLESS
+        )
 
-        # Replace with actual selector after inspection
-        cards = page.locator("a")
+        self.page = self.browser.new_page(
+            user_agent=USER_AGENT
+        )
 
-        count = cards.count()
+        self.page.set_default_timeout(
+            PAGE_TIMEOUT
+        )
 
-        for i in range(count):
+    def stop(self):
+
+        if self.browser:
+
+            self.browser.close()
+
+        self.playwright.stop()
+
+    def open(self, url):
+
+        self.page.goto(
+            url,
+            wait_until="networkidle"
+        )
+
+        self.page.wait_for_timeout(
+            WAIT_AFTER_LOAD
+        )
+
+    ############################################################
+
+    def scrape_store(self):
+
+        """
+        hmtwatches.store
+        """
+
+        watches = {}
+
+        cards = self.page.locator(
+            "div.css-1n7hyxf"
+        )
+
+        print(
+            f"Store : {cards.count()} cards found"
+        )
+
+        for i in range(cards.count()):
 
             try:
 
                 card = cards.nth(i)
 
-                href = card.get_attribute("href")
+                title = card.locator(
+                    '[data-testid="standardlayout-product-title-text"]'
+                )
 
-                name = card.inner_text().strip()
+                price = card.locator(
+                    '[data-testid="standardlayout-selling-price-text"]'
+                )
 
-                if len(name) < 3:
+                image = card.locator("img")
+
+                if title.count() == 0:
                     continue
 
-                if href is None:
+                if price.count() == 0:
                     continue
 
-                if href.startswith("/"):
+                if image.count() == 0:
+                    continue
 
-                    domain = "/".join(url.split("/")[:3])
+                name = title.inner_text().strip()
 
-                    href = domain + href
+                selling_price = (
+                    price.inner_text().strip()
+                )
 
-                products[href] = {
-                    "name": name,
-                    "url": href
-                }
+                image_url = image.get_attribute(
+                    "src"
+                )
 
-            except Exception:
-                pass
+                # Product page not exposed in HTML.
+                # Image URL is used as unique key for now.
 
-        browser.close()
+                product_url = image_url
 
-    return products
+                watch = Watch.create(
 
+                    name=name,
 
-def scrape_all(urls):
+                    price=selling_price,
 
-    all_products = {}
+                    product_url=product_url,
 
-    for url in urls:
+                    image_url=image_url,
 
-        try:
+                    stock="Available",
 
-            products = scrape_site(url)
+                    source="HMT Store"
 
-            all_products.update(products)
+                )
 
-            print(f"{url} -> {len(products)} products")
+                watches[product_url] = watch
 
-        except Exception as e:
+            except Exception as e:
 
-            print(e)
+                print(e)
 
-    return all_products
+        return watches
+
+    ############################################################
+
+    def scrape_official(self):
+
+        """
+        hmtwatches.in
+        """
+
+        watches = {}
+
+        cards = self.page.locator(
+            ".bc_p_item"
+        )
+
+        print(
+            f"Official : {cards.count()} cards found"
+        )
+
+        for i in range(cards.count()):
+
+            try:
+
+                card = cards.nth(i)
+
+                name = card.locator(
+                    ".bc_p_name span"
+                ).inner_text().strip()
+
+                price = card.locator(
+                    ".bc_p_detail p"
+                ).inner_text().strip()
+
+                product_link = card.locator(
+                    "a.bc_p_name"
+                )
+
+                href = product_link.get_attribute(
+                    "href"
+                )
+
+                href = urljoin(
+                    "https://hmtwatches.in",
+                    href
+                )
+
+                image = card.locator("img")
+
+                image_url = image.get_attribute(
+                    "src"
+                )
+
+                image_url = urljoin(
+                    "https://hmtwatches.in",
+                    image_url
+                )
+
+                stock = "Available"
+
+                if card.locator(
+                    ".fa-shopping-cart"
+                ).count() == 0:
+
+                    stock = "Out of Stock"
+
+                watch = Watch.create(
+
+                    name=name,
+
+                    price=price,
+
+                    product_url=href,
+
+                    image_url=image_url,
+
+                    stock=stock,
+
+                    source="Official"
+
+                )
+
+                watches[href] = watch
+
+            except Exception as e:
+
+                print(e)
+
+        return watches
+
+    ############################################################
+
+    def scrape(self):
+
+        all_watches = {}
+
+        websites = [
+
+            (
+                "https://www.hmtwatches.store/all-products",
+                self.scrape_store,
+            ),
+
+            (
+                "https://hmtwatches.in/mens",
+                self.scrape_official,
+            )
+
+        ]
+
+        for url, func in websites:
+
+            success = False
+
+            for retry in range(MAX_RETRIES):
+
+                try:
+
+                    print(
+                        f"Opening {url}"
+                    )
+
+                    self.open(url)
+
+                    watches = func()
+
+                    all_watches.update(
+                        watches
+                    )
+
+                    success = True
+
+                    break
+
+                except TimeoutError:
+
+                    print(
+                        f"Timeout : {retry+1}"
+                    )
+
+                    time.sleep(
+                        RETRY_DELAY
+                    )
+
+                except Exception as e:
+
+                    print(e)
+
+                    time.sleep(
+                        RETRY_DELAY
+                    )
+
+            if not success:
+
+                print(
+                    f"Failed : {url}"
+                )
+
+        return all_watches

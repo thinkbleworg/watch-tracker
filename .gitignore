@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[c]
+*.pyc
+*.pyo
+
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# VS Code
+.vscode/
+
+# JetBrains IDEs
+.idea/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Playwright
+playwright-report/
+test-results/
+
+# Environment files
+.env
+
+# Temporary files
+*.tmp
+
+# JSON files
+snapshot.json
+snapshot_new.json
