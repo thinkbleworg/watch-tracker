@@ -1,3 +1,8 @@
+import os
+
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+CHAT_ID = os.environ["CHAT_ID"]
+
 BOT_TOKEN = "8964670457:AAGKE0Y30aljqAtcSWcJb7L4_f9tvYWjtdg"
 
 CHAT_ID = "1124775866"
