@@ -7,23 +7,29 @@ https://www.hmtwatches.store
 Uses SmartBiz Product API.
 """
 
-import json
-from typing import Dict
+from typing import Dict, List
 
 from models import Watch
 
-from config import STORE_API
+from config import (
+    STORE_API,
+    STORE_HEADERS,
+)
 
 from .base import BaseScraper
 
 
 class HMTStoreScraper(BaseScraper):
 
+    SHOP_ID = 48236
+
+    PAGE_SIZE = 10
+
     def __init__(self):
 
         super().__init__()
 
-    # -----------------------------------------------------
+    # -------------------------------------------------------------
 
     def scrape(self) -> Dict[str, Watch]:
 
@@ -33,198 +39,248 @@ class HMTStoreScraper(BaseScraper):
 
         watches = {}
 
-        for product in products:
+        for item in products:
 
-            watch = self.parse_product(product)
+            try:
 
-            if watch:
+                watch = self.parse_product(item)
+
+                if watch is None:
+                    continue
+
+                #
+                # Deduplicate
+                #
 
                 watches[watch.id] = watch
 
-        print(f"Found {len(watches)} products.")
+            except Exception as ex:
+
+                print(
+                    "Parse Error:",
+                    ex
+                )
+
+        print(
+            f"Found {len(watches)} store products."
+        )
 
         return watches
 
-    # -----------------------------------------------------
+    # -------------------------------------------------------------
 
-    def fetch_products(self):
+    def fetch_products(self) -> List[dict]:
 
-        response = self.get(STORE_API)
+        """
+        Downloads every page
+        from SmartBiz API.
+        """
 
-        data = response.json()
+        all_products = []
 
-        #
-        # API sometimes returns list directly
-        #
+        offset = 0
 
-        if isinstance(data, list):
+        while True:
 
-            return data
+            payload = {
 
-        #
-        # Future proof
-        #
+                "shopId": self.SHOP_ID,
 
-        if isinstance(data, dict):
+                "filter": {
 
-            if "products" in data:
+                    "division": None,
 
-                return data["products"]
+                    "isBestSeller": None
 
-            if "items" in data:
+                },
 
-                return data["items"]
+                "offset": offset,
 
-            if "data" in data:
+                "limit": self.PAGE_SIZE
 
-                return data["data"]
+            }
 
-        return []
+            response = self.post(
 
-    # -----------------------------------------------------
+                STORE_API,
 
-    def parse_product(self, item):
+                headers=STORE_HEADERS,
 
-        try:
-
-            #
-            # Product ID
-            #
-
-            product_id = item.get(
-                "primaryProductId"
-            )
-
-            if not product_id:
-
-                return None
-
-            #
-            # Name
-            #
-
-            name = self.clean(
-
-                item.get("name")
+                json=payload
 
             )
 
-            #
-            # Image
-            #
-
-            image = item.get(
-
-                "productImageUrl",
-
-                ""
-
-            )
+            products = response.json()
 
             #
-            # Price
+            # API returns []
+            # when no more pages.
             #
 
-            price = self.build_price(
+            if not products:
 
-                item.get(
-
-                    "sellingPrice"
-
-                )
-
-            )
-
-            ##################################################
-
-            # Product URL
-
-            ##################################################
-
-            product_url = (
-
-                "https://www.hmtwatches.store/product/"
-
-                f"{product_id}"
-
-            )
-
-            ##################################################
-
-            # Stock
-
-            ##################################################
-
-            stock = "Available"
-
-            attrs = item.get(
-
-                "additionalAttributes"
-
-            )
-
-            if attrs:
-
-                try:
-
-                    attrs = json.loads(attrs)
-
-                except Exception:
-
-                    attrs = {}
-
-                #
-                # SmartBiz stores OOS here
-                #
-
-                if attrs.get("isOOS", False):
-
-                    stock = "Out of Stock"
-
-            ##################################################
-
-            #
-            # Backup checks
-            #
-
-            if item.get(
-
-                "currentStock",
-
-                0
-
-            ) == 0:
-
-                stock = "Out of Stock"
-
-            ##################################################
-
-            return Watch.create(
-
-                id=product_id,
-
-                name=name,
-
-                price=price,
-
-                product_url=product_url,
-
-                image_url=image,
-
-                stock=stock,
-
-                source="HMT Store",
-
-            )
-
-        except Exception as ex:
+                break
 
             print(
 
-                "Parse Error:",
+                f"Offset {offset}"
 
-                ex
+                f" -> "
+
+                f"{len(products)} products"
 
             )
 
+            all_products.extend(
+
+                products
+
+            )
+
+            #
+            # Last page
+            #
+
+            if len(products) < self.PAGE_SIZE:
+
+                break
+
+            offset += self.PAGE_SIZE
+
+        print(
+
+            f"Downloaded "
+
+            f"{len(all_products)} "
+
+            f"products"
+
+        )
+
+        return all_products
+
+    # -------------------------------------------------------------
+
+    def parse_product(
+
+        self,
+
+        item
+
+    ) -> Watch | None:
+    
+        """
+        Converts SmartBiz JSON
+        into Watch model.
+        """
+
+        #
+        # Product ID
+        #
+
+        product_id = (
+            item.get("primaryProductId")
+            or item.get("sku")
+        )
+
+        if not product_id:
             return None
+
+        #
+        # Name
+        #
+
+        name = self.clean(
+            item.get("name", "")
+        )
+
+        #
+        # Price
+        #
+
+        price = self.build_price(
+            item.get("sellingPrice")
+        )
+
+        #
+        # Image
+        #
+
+        image = item.get(
+            "productImageUrl",
+            ""
+        )
+
+        #
+        # Product URL
+        #
+
+        product_url = (
+            "https://www.hmtwatches.store/product/"
+            f"{product_id}"
+        )
+
+        ####################################################
+        # Stock
+        ####################################################
+
+        stock = "Out of Stock"
+
+        try:
+
+            availability = (
+                item["buyingOptions"]
+                    ["singlePurchase"]
+                    ["availability"]
+            )
+
+            if availability.get(
+                "isBuyable",
+                False
+            ):
+                stock = "Available"
+
+        except Exception:
+            pass
+
+        ####################################################
+        # Variant Handling
+        ####################################################
+
+        variants = item.get(
+            "variantsDimensions",
+            []
+        )
+
+        #
+        # If variant has image,
+        # prefer variant image.
+        #
+
+        if variants:
+
+            first = variants[0]
+
+            if first.get("imageUrl"):
+
+                image = first["imageUrl"]
+
+        ####################################################
+
+        return Watch.create(
+
+            id=product_id,
+
+            name=name,
+
+            price=price,
+
+            product_url=product_url,
+
+            image_url=image,
+
+            stock=stock,
+
+            source="HMT Store",
+
+        )

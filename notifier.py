@@ -21,6 +21,9 @@ class Notifier:
 
     def __init__(self):
 
+        print(BOT_TOKEN)
+        print(CHAT_ID)
+
         self.url = (
             f"https://api.telegram.org/"
             f"bot{BOT_TOKEN}"
