@@ -5,11 +5,16 @@ on:
   workflow_dispatch:
 
   schedule:
-    - cron: "*/5 * * * *"
+    # GitHub does not reliably honor schedules more
+    # frequent than ~10-15 minutes on hosted runners --
+    # they get delayed or silently dropped under load.
+    # For true 5-minute cadence, run this off a VPS or
+    # a managed scheduler instead (see README).
+    - cron: "*/10 * * * *"
 
 concurrency:
   group: hmt-watch-tracker
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -19,6 +24,7 @@ jobs:
   monitor:
 
     runs-on: ubuntu-latest
+    timeout-minutes: 8
 
     steps:
 
@@ -70,4 +76,5 @@ jobs:
 
           git commit -m "Update snapshot" || echo "Nothing to commit"
 
+          git pull --rebase
           git push
