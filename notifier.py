@@ -19,6 +19,7 @@ from config import (
     TELEGRAM_MIN_INTERVAL,
     TELEGRAM_MAX_RETRIES,
 )
+from timeutils import format_ist
 
 
 class Notifier:
@@ -71,13 +72,13 @@ class Notifier:
 {watch.source}
 
 🕒 <b>First Seen</b>
-{watch.first_seen}
+{format_ist(watch.first_seen)}
 
 🕒 <b>Last Seen</b>
-{watch.last_seen}
+{format_ist(watch.last_seen)}
 
 🟢 <b>Last Available</b>
-{watch.last_available}
+{format_ist(watch.last_available)}
 
 🔗
 {watch.product_url}

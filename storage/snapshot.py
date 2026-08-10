@@ -9,10 +9,10 @@ Responsible for:
 
 import json
 from pathlib import Path
-from datetime import datetime
 
 from config import SNAPSHOT_FILE
 from models import Watch
+from timeutils import now_ist_iso
 
 
 class SnapshotManager:
@@ -88,7 +88,7 @@ class SnapshotManager:
             - last_available
         """
 
-        now = datetime.now().isoformat(timespec="seconds")
+        now = now_ist_iso()
 
         for product_id, watch in current.items():
 

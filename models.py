@@ -5,7 +5,7 @@ Watch model
 from dataclasses import dataclass
 from dataclasses import asdict
 
-from datetime import datetime
+from timeutils import now_ist_iso
 
 
 @dataclass
@@ -61,7 +61,7 @@ class Watch:
 
     ):
 
-        now = datetime.now().isoformat()
+        now = now_ist_iso()
 
         return cls(
 

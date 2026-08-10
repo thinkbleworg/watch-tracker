@@ -1,6 +1,15 @@
 """
 HMT Watch Tracker
 Main Entry Point
+
+Scope (by design): only Available watches are tracked at
+all. Out-of-stock listings are discarded before comparison
+and never persisted to the snapshot. The only alert this
+sends is "a watch is available now that wasn't in the
+previous check" -- covers both a genuinely brand-new
+product and a previously-tracked one coming back in stock.
+Sold-out / price-change notifications are intentionally
+not sent.
 """
 
 from compare import Comparator
@@ -38,8 +47,8 @@ def backfill_failed_source(current, previous, source_name, ok):
     of leaving them absent from `current`. Without this,
     a single transient failure (site timeout, API change)
     would make the comparator think every watch from that
-    source was "removed" and fire a flood of false
-    sold-out alerts.
+    source vanished, and next run's diff logic would treat
+    a real restock as a false "new" alert.
     """
 
     if ok:
@@ -106,19 +115,25 @@ def main():
     )
 
     ########################################################
+    # Drop everything that isn't Available. Out-of-stock
+    # watches are not tracked, not persisted, not compared.
+    ########################################################
 
-    available = sum(
-        1 for watch in current.values()
+    scraped_total = len(current)
+
+    current = {
+        pid: watch
+        for pid, watch in current.items()
         if watch.stock == "Available"
-    )
-    out_of_stock = len(current) - available
+    }
 
     print()
-    print(f"Current Watches : {len(current)}")
+    print(f"Scraped Total : {scraped_total}")
     print(f"  Store    : {len(store_results)}")
     print(f"  Official : {len(official_results)}")
-    print(f"Available : {available}")
-    print(f"Out Of Stock : {out_of_stock}")
+    print(f"Available (tracked) : {len(current)}")
+    print(f"Discarded (out of stock) : "
+          f"{scraped_total - len(current)}")
 
     ########################################################
     # Compare
@@ -134,7 +149,7 @@ def main():
     current = snapshot.update_history(previous, result.updated)
 
     ########################################################
-    # Notifications
+    # Notifications -- new (available) watches only
     ########################################################
 
     if first_run:
@@ -145,32 +160,12 @@ def main():
     else:
         notifier = Notifier()
 
-        new_available = [
-            w for w in result.new if w.stock == "Available"
-        ]
-
         print()
         print(f"Sending notifications: "
-              f"{len(new_available)} new, "
-              f"{len(result.sold_out)} sold out, "
-              f"{len(result.back_in_stock)} back in stock, "
-              f"{len(result.price_changed)} price changes")
+              f"{len(result.new)} new watch(es)")
 
-        for watch in new_available:
+        for watch in result.new:
             notifier.new_watch(watch)
-
-        for watch in result.sold_out:
-            notifier.sold_out(watch)
-
-        for watch in result.back_in_stock:
-            notifier.back_in_stock(watch)
-
-        for item in result.price_changed:
-            notifier.price_changed(
-                item["watch"],
-                item["old_price"],
-                item["new_price"]
-            )
 
     ########################################################
     # Save Snapshot
@@ -186,11 +181,8 @@ def main():
     print("=" * 60)
     print("SUMMARY")
     print("=" * 60)
-    print(f"New Watches : {len(result.new)}")
-    print(f"Removed Watches : {len(result.removed)}")
-    print(f"Back In Stock : {len(result.back_in_stock)}")
-    print(f"Sold Out : {len(result.sold_out)}")
-    print(f"Price Changes : {len(result.price_changed)}")
+    print(f"New Watches Alerted : {len(result.new)}")
+    print(f"No Longer Available/Listed : {len(result.removed)}")
     print()
     print("Snapshot Updated.")
     print("=" * 60)

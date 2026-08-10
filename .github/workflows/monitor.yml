@@ -1,20 +1,19 @@
-name: HMT Watch Tracker
+name: HMT Watch Tracker (manual / debug only)
+#
+# The scheduled trigger has been removed on purpose. The
+# tracker now runs from a systemd timer on an Oracle Cloud
+# VM every 5 minutes (see deploy/oracle-cloud/). Re-enabling
+# a `schedule:` block here WILL cause duplicate Telegram
+# alerts and two independent, diverging snapshot.json
+# copies (this repo's committed one vs. the VM's local
+# one) -- don't turn this back on unless the VM deployment
+# is torn down first.
+#
+# Kept as workflow_dispatch only, for manually running the
+# tracker from the GitHub UI when debugging.
 
 on:
-
   workflow_dispatch:
-
-  schedule:
-    # GitHub does not reliably honor schedules more
-    # frequent than ~10-15 minutes on hosted runners --
-    # they get delayed or silently dropped under load.
-    # For true 5-minute cadence, run this off a VPS or
-    # a managed scheduler instead (see README).
-    - cron: "*/10 * * * *"
-
-concurrency:
-  group: hmt-watch-tracker
-  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -43,17 +42,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Verify Snapshot
-        run: |
-          ls -R
-          echo "-----"
-          if [ -f snapshots/snapshot.json ]; then
-            echo "Snapshot exists"
-            wc -c snapshots/snapshot.json
-          else
-            echo "Snapshot missing"
-          fi
-
       - name: Run Tracker
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
@@ -71,10 +59,7 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-
           git add snapshots/snapshot.json
-
-          git commit -m "Update snapshot" || echo "Nothing to commit"
-
+          git commit -m "Update snapshot (manual run)"
           git pull --rebase
           git push
