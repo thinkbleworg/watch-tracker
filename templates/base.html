@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>
+        {% block title %}HMT Watch Tracker{% endblock %}
+    </title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', path='style.css') }}"
+    >
+
+    {% block head %}{% endblock %}
+</head>
+
+<body>
+    <div class="app-shell">
+
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="brand-mark">H</div>
+
+                <div>
+                    <div class="brand-title">
+                        HMT Tracker
+                    </div>
+
+                    <div class="brand-subtitle">
+                        Watch availability monitor
+                    </div>
+                </div>
+            </div>
+
+            <nav class="nav">
+                <a
+                    href="/"
+                    class="nav-item {% block nav_dashboard %}{% endblock %}"
+                >
+                    <span class="nav-icon">⌂</span>
+                    <span>Dashboard</span>
+                </a>
+
+                <a
+                    href="/catalogue"
+                    class="nav-item {% block nav_catalogue %}{% endblock %}"
+                >
+                    <span class="nav-icon">◫</span>
+                    <span>Catalogue</span>
+                </a>
+
+                <a
+                    href="/tracking"
+                    class="nav-item {% block nav_tracking %}{% endblock %}"
+                >
+                    <span class="nav-icon">◎</span>
+                    <span>Tracking</span>
+                </a>
+
+                <a
+                    href="/alerts"
+                    class="nav-item {% block nav_alerts %}{% endblock %}"
+                >
+                    <span class="nav-icon">♢</span>
+                    <span>Alerts</span>
+                </a>
+
+                <a
+                    href="/settings"
+                    class="nav-item {% block nav_settings %}{% endblock %}"
+                >
+                    <span class="nav-icon">⚙</span>
+                    <span>Settings</span>
+                </a>
+            </nav>
+
+            <div class="sidebar-bottom">
+                <div class="system-status">
+                    <span
+                        id="sidebar-status-dot"
+                        class="status-dot"
+                    ></span>
+
+                    <div>
+                        <div class="system-status-title">
+                            Tracker
+                        </div>
+
+                        <div
+                            id="sidebar-status-text"
+                            class="system-status-text"
+                        >
+                            Checking...
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main application -->
+        <main class="main-content">
+
+            <!-- Top bar -->
+            <header class="topbar">
+                <div class="topbar-left">
+                    {% block page_header %}
+                    <div>
+                        <h1>HMT Watch Tracker</h1>
+                        <p>
+                            Monitor HMT watches across both stores.
+                        </p>
+                    </div>
+                    {% endblock %}
+                </div>
+
+                <div class="topbar-right">
+                    <div
+                        id="last-run"
+                        class="last-run"
+                    >
+                        Last run: —
+                    </div>
+
+                    <button
+                        id="run-now-button"
+                        class="button button-primary"
+                        type="button"
+                        onclick="runTracker()"
+                    >
+                        Run Now
+                    </button>
+                </div>
+            </header>
+
+            <!-- Flash / notification area -->
+            <div
+                id="notification-area"
+                class="notification-area"
+                aria-live="polite"
+            ></div>
+
+            <!-- Page content -->
+            <section class="page-content">
+                {% block content %}{% endblock %}
+            </section>
+
+        </main>
+    </div>
+
+    <script src="{{ url_for('static', path='app.js') }}"></script>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

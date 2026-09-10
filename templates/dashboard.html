@@ -1,0 +1,910 @@
+{% extends "base.html" %}
+
+{% block title %}
+    Dashboard — HMT Watch Tracker
+{% endblock %}
+
+{% block nav_dashboard %}
+    active
+{% endblock %}
+
+{% block page_header %}
+<div>
+    <h1>Dashboard</h1>
+    <p>
+        Monitor catalogue changes and newly discovered watches.
+    </p>
+</div>
+{% endblock %}
+
+
+{% block content %}
+
+<!-- Overview cards -->
+<div class="stats-grid">
+
+    <div class="stat-card">
+        <div class="stat-card-header">
+            <span class="stat-label">
+                Catalogue
+            </span>
+
+            <span class="stat-icon">
+                ◫
+            </span>
+        </div>
+
+        <div
+            id="stat-total-watches"
+            class="stat-value"
+        >
+            —
+        </div>
+
+        <div class="stat-description">
+            Total watches discovered
+        </div>
+    </div>
+
+
+    <div class="stat-card">
+        <div class="stat-card-header">
+            <span class="stat-label">
+                In Stock
+            </span>
+
+            <span class="stat-icon">
+                ✓
+            </span>
+        </div>
+
+        <div
+            id="stat-in-stock"
+            class="stat-value"
+        >
+            —
+        </div>
+
+        <div class="stat-description">
+            Currently available
+        </div>
+    </div>
+
+
+    <div class="stat-card">
+        <div class="stat-card-header">
+            <span class="stat-label">
+                Tracked
+            </span>
+
+            <span class="stat-icon">
+                ◎
+            </span>
+        </div>
+
+        <div
+            id="stat-tracked"
+            class="stat-value"
+        >
+            —
+        </div>
+
+        <div class="stat-description">
+            Matching tracking rules
+        </div>
+    </div>
+
+
+    <div class="stat-card">
+        <div class="stat-card-header">
+            <span class="stat-label">
+                Pending Alerts
+            </span>
+
+            <span class="stat-icon">
+                ♢
+            </span>
+        </div>
+
+        <div
+            id="stat-pending-alerts"
+            class="stat-value"
+        >
+            —
+        </div>
+
+        <div class="stat-description">
+            Waiting for delivery
+        </div>
+    </div>
+
+</div>
+
+
+<!-- Tracker status -->
+<div class="dashboard-grid">
+
+    <section class="panel">
+
+        <div class="panel-header">
+            <div>
+                <h2>Tracker Status</h2>
+                <p>
+                    Current monitoring state.
+                </p>
+            </div>
+
+            <span
+                id="tracker-status-badge"
+                class="badge badge-neutral"
+            >
+                Checking
+            </span>
+        </div>
+
+
+        <div class="status-list">
+
+            <div class="status-row">
+                <span class="status-row-label">
+                    Scheduler
+                </span>
+
+                <span
+                    id="scheduler-status"
+                    class="status-row-value"
+                >
+                    —
+                </span>
+            </div>
+
+
+            <div class="status-row">
+                <span class="status-row-label">
+                    Last completed run
+                </span>
+
+                <span
+                    id="dashboard-last-run"
+                    class="status-row-value"
+                >
+                    —
+                </span>
+            </div>
+
+
+            <div class="status-row">
+                <span class="status-row-label">
+                    Next scheduled run
+                </span>
+
+                <span
+                    id="next-run"
+                    class="status-row-value"
+                >
+                    —
+                </span>
+            </div>
+
+
+            <div class="status-row">
+                <span class="status-row-label">
+                    Run interval
+                </span>
+
+                <span
+                    id="run-interval"
+                    class="status-row-value"
+                >
+                    5 minutes
+                </span>
+            </div>
+
+        </div>
+
+    </section>
+
+
+    <!-- Sources -->
+    <section class="panel">
+
+        <div class="panel-header">
+            <div>
+                <h2>Sources</h2>
+                <p>
+                    HMT stores being monitored.
+                </p>
+            </div>
+        </div>
+
+
+        <div id="source-list">
+            <div class="loading-state">
+                Loading sources...
+            </div>
+        </div>
+
+    </section>
+
+</div>
+
+
+<!-- Recent stock -->
+<section class="panel">
+
+    <div class="panel-header">
+
+        <div>
+            <h2>Currently In Stock</h2>
+
+            <p>
+                Watches recently found available.
+            </p>
+        </div>
+
+        <a
+            href="/catalogue?stock=in"
+            class="button button-secondary"
+        >
+            View Catalogue
+        </a>
+
+    </div>
+
+
+    <div
+        id="recent-stock-list"
+        class="watch-list"
+    >
+        <div class="loading-state">
+            Loading catalogue...
+        </div>
+    </div>
+
+</section>
+
+
+<!-- Recent alerts -->
+<section class="panel">
+
+    <div class="panel-header">
+
+        <div>
+            <h2>Recent Alerts</h2>
+
+            <p>
+                Latest Telegram notification activity.
+            </p>
+        </div>
+
+        <a
+            href="/alerts"
+            class="button button-secondary"
+        >
+            View Alerts
+        </a>
+
+    </div>
+
+
+    <div
+        id="recent-alerts-list"
+        class="alert-list"
+    >
+        <div class="loading-state">
+            Loading alerts...
+        </div>
+    </div>
+
+</section>
+
+
+<!-- Important behaviour -->
+<section class="info-panel">
+
+    <div class="info-panel-icon">
+        ℹ
+    </div>
+
+    <div>
+        <h3>How alerts work</h3>
+
+        <p>
+            The first successful run silently builds the catalogue.
+            Telegram notifications are sent only when a watch is
+            newly discovered and is in stock.
+        </p>
+
+        <p>
+            Watches that remain in stock are not repeatedly notified
+            every five minutes.
+        </p>
+    </div>
+
+</section>
+
+{% endblock %}
+
+
+{% block scripts %}
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+    loadDashboard();
+});
+
+
+async function loadDashboard() {
+    await Promise.all([
+        loadStats(),
+        loadStatus(),
+        loadSources(),
+        loadRecentStock(),
+        loadRecentAlerts()
+    ]);
+}
+
+
+/* -----------------------------------------------------------
+   Stats
+----------------------------------------------------------- */
+
+async function loadStats() {
+    try {
+        const response = await fetch("/api/stats");
+
+        if (!response.ok) {
+            throw new Error("Failed to load statistics");
+        }
+
+        const data = await response.json();
+
+        setText(
+            "stat-total-watches",
+            data.total_watches ?? 0
+        );
+
+        setText(
+            "stat-in-stock",
+            data.in_stock ?? 0
+        );
+
+        setText(
+            "stat-tracked",
+            data.tracked ?? 0
+        );
+
+        setText(
+            "stat-pending-alerts",
+            data.pending_alerts ?? 0
+        );
+
+    } catch (error) {
+        console.error(error);
+    }
+}
+
+
+/* -----------------------------------------------------------
+   Status
+----------------------------------------------------------- */
+
+async function loadStatus() {
+    try {
+        const response = await fetch("/api/status");
+
+        if (!response.ok) {
+            throw new Error("Failed to load status");
+        }
+
+        const data = await response.json();
+
+        const running =
+            data.running === true ||
+            data.status === "running";
+
+        const badge =
+            document.getElementById(
+                "tracker-status-badge"
+            );
+
+        if (running) {
+            badge.textContent = "Running";
+            badge.className =
+                "badge badge-success";
+        } else {
+            badge.textContent = "Idle";
+            badge.className =
+                "badge badge-neutral";
+        }
+
+
+        setText(
+            "scheduler-status",
+            data.scheduler_running
+                ? "Running"
+                : "Stopped"
+        );
+
+
+        const lastRun =
+            data.last_run ||
+            data.last_completed_run ||
+            data.last_run_at;
+
+        setText(
+            "dashboard-last-run",
+            formatDate(lastRun)
+        );
+
+        setText(
+            "last-run",
+            lastRun
+                ? "Last run: " + formatDate(lastRun)
+                : "Last run: —"
+        );
+
+
+        if (data.next_run) {
+            setText(
+                "next-run",
+                formatDate(data.next_run)
+            );
+        } else {
+            setText(
+                "next-run",
+                "Automatic"
+            );
+        }
+
+    } catch (error) {
+        console.error(error);
+
+        setText(
+            "scheduler-status",
+            "Unavailable"
+        );
+
+        setText(
+            "dashboard-last-run",
+            "Unavailable"
+        );
+    }
+}
+
+
+/* -----------------------------------------------------------
+   Sources
+----------------------------------------------------------- */
+
+async function loadSources() {
+    try {
+        const response = await fetch("/api/sources");
+
+        if (!response.ok) {
+            throw new Error("Failed to load sources");
+        }
+
+        const data = await response.json();
+
+        const container =
+            document.getElementById("source-list");
+
+        let sources = data;
+
+        if (data.sources) {
+            sources = data.sources;
+        }
+
+        if (!Array.isArray(sources)) {
+            sources = [];
+        }
+
+        if (sources.length === 0) {
+            container.innerHTML =
+                '<div class="empty-state">' +
+                'No sources configured.' +
+                '</div>';
+
+            return;
+        }
+
+
+        container.innerHTML = sources.map(source => {
+
+            const enabled =
+                source.enabled !== false;
+
+            const name =
+                source.name ||
+                source.source ||
+                source.id ||
+                "Unknown source";
+
+            const status =
+                source.status ||
+                (enabled ? "Enabled" : "Disabled");
+
+            return `
+                <div class="source-row">
+
+                    <div class="source-info">
+
+                        <span
+                            class="status-dot ${
+                                enabled
+                                    ? "status-online"
+                                    : "status-offline"
+                            }"
+                        ></span>
+
+                        <div>
+                            <div class="source-name">
+                                ${escapeHtml(name)}
+                            </div>
+
+                            <div class="source-status">
+                                ${escapeHtml(status)}
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <span
+                        class="badge ${
+                            enabled
+                                ? "badge-success"
+                                : "badge-neutral"
+                        }"
+                    >
+                        ${enabled ? "Enabled" : "Disabled"}
+                    </span>
+
+                </div>
+            `;
+        }).join("");
+
+    } catch (error) {
+        console.error(error);
+
+        document.getElementById(
+            "source-list"
+        ).innerHTML =
+            '<div class="error-state">' +
+            'Unable to load sources.' +
+            '</div>';
+    }
+}
+
+
+/* -----------------------------------------------------------
+   Recent stock
+----------------------------------------------------------- */
+
+async function loadRecentStock() {
+    try {
+        const response = await fetch(
+            "/api/watches?in_stock=true&limit=8"
+        );
+
+        if (!response.ok) {
+            throw new Error(
+                "Failed to load watches"
+            );
+        }
+
+        const data = await response.json();
+
+        const watches =
+            Array.isArray(data)
+                ? data
+                : data.watches || [];
+
+        const container =
+            document.getElementById(
+                "recent-stock-list"
+            );
+
+        if (watches.length === 0) {
+            container.innerHTML =
+                '<div class="empty-state">' +
+                'No watches currently in stock.' +
+                '</div>';
+
+            return;
+        }
+
+
+        container.innerHTML = watches.map(
+            watch => renderWatch(watch)
+        ).join("");
+
+    } catch (error) {
+        console.error(error);
+
+        document.getElementById(
+            "recent-stock-list"
+        ).innerHTML =
+            '<div class="error-state">' +
+            'Unable to load catalogue.' +
+            '</div>';
+    }
+}
+
+
+function renderWatch(watch) {
+    const image =
+        watch.image_url ||
+        watch.imageUrl ||
+        "";
+
+    const name =
+        watch.name ||
+        "Unnamed watch";
+
+    const stock =
+        watch.stock_count !== null &&
+        watch.stock_count !== undefined
+            ? `${watch.stock_count} available`
+            : "In stock";
+
+    const price =
+        watch.price !== null &&
+        watch.price !== undefined
+            ? formatPrice(watch.price)
+            : "—";
+
+    const source =
+        watch.source || "";
+
+    const url =
+        watch.product_url ||
+        watch.productUrl ||
+        "#";
+
+
+    return `
+        <article class="watch-card">
+
+            <div class="watch-image">
+                ${
+                    image
+                        ? `
+                            <img
+                                src="${escapeHtml(image)}"
+                                alt="${escapeHtml(name)}"
+                                loading="lazy"
+                            >
+                          `
+                        : `
+                            <div class="watch-image-placeholder">
+                                HMT
+                            </div>
+                          `
+                }
+            </div>
+
+            <div class="watch-details">
+
+                <div class="watch-name">
+                    ${escapeHtml(name)}
+                </div>
+
+                ${
+                    watch.model_number
+                        ? `
+                            <div class="watch-model">
+                                ${escapeHtml(
+                                    watch.model_number
+                                )}
+                            </div>
+                          `
+                        : ""
+                }
+
+                <div class="watch-meta">
+
+                    <span
+                        class="badge badge-success"
+                    >
+                        ${escapeHtml(stock)}
+                    </span>
+
+                    <span class="watch-source">
+                        ${escapeHtml(source)}
+                    </span>
+
+                </div>
+
+            </div>
+
+            <div class="watch-price">
+                ${escapeHtml(price)}
+            </div>
+
+            <a
+                href="${escapeHtml(url)}"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="button button-small button-secondary"
+            >
+                View
+            </a>
+
+        </article>
+    `;
+}
+
+
+/* -----------------------------------------------------------
+   Recent alerts
+----------------------------------------------------------- */
+
+async function loadRecentAlerts() {
+    try {
+        const response = await fetch(
+            "/api/alerts?limit=8"
+        );
+
+        if (!response.ok) {
+            throw new Error(
+                "Failed to load alerts"
+            );
+        }
+
+        const data = await response.json();
+
+        const alerts =
+            Array.isArray(data)
+                ? data
+                : data.alerts || [];
+
+        const container =
+            document.getElementById(
+                "recent-alerts-list"
+            );
+
+        if (alerts.length === 0) {
+            container.innerHTML =
+                '<div class="empty-state">' +
+                'No alerts yet.' +
+                '</div>';
+
+            return;
+        }
+
+
+        container.innerHTML = alerts.map(
+            alert => {
+
+                const name =
+                    alert.watch_name ||
+                    alert.name ||
+                    "Watch";
+
+                const type =
+                    alert.alert_type ||
+                    "new";
+
+                const status =
+                    alert.status ||
+                    "pending";
+
+                const created =
+                    alert.created_at ||
+                    alert.created ||
+                    null;
+
+
+                return `
+                    <div class="alert-row">
+
+                        <div class="alert-main">
+
+                            <div class="alert-name">
+                                ${escapeHtml(name)}
+                            </div>
+
+                            <div class="alert-meta">
+                                ${escapeHtml(
+                                    type
+                                )}
+                                ·
+                                ${formatDate(created)}
+                            </div>
+
+                        </div>
+
+                        <span
+                            class="badge ${
+                                status === "sent"
+                                    ? "badge-success"
+                                    : status === "failed"
+                                        ? "badge-danger"
+                                        : "badge-warning"
+                            }"
+                        >
+                            ${escapeHtml(status)}
+                        </span>
+
+                    </div>
+                `;
+            }
+        ).join("");
+
+    } catch (error) {
+        console.error(error);
+
+        document.getElementById(
+            "recent-alerts-list"
+        ).innerHTML =
+            '<div class="error-state">' +
+            'Unable to load alerts.' +
+            '</div>';
+    }
+}
+
+
+/* -----------------------------------------------------------
+   Helpers
+----------------------------------------------------------- */
+
+function setText(id, value) {
+    const element =
+        document.getElementById(id);
+
+    if (element) {
+        element.textContent =
+            value === null ||
+            value === undefined
+                ? "—"
+                : value;
+    }
+}
+
+
+function formatDate(value) {
+    if (!value) {
+        return "—";
+    }
+
+    const date =
+        new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return String(value);
+    }
+
+    return date.toLocaleString();
+}
+
+
+function formatPrice(value) {
+    const number =
+        Number(value);
+
+    if (Number.isNaN(number)) {
+        return String(value);
+    }
+
+    return "₹" +
+        number.toLocaleString(
+            "en-IN",
+            {
+                maximumFractionDigits: 2
+            }
+        );
+}
+
+
+function escapeHtml(value) {
+    return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+}
+</script>
+
+{% endblock %}
