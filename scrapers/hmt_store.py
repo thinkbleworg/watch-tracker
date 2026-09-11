@@ -1,29 +1,40 @@
+# scrapers/hmt_store.py
+
 from __future__ import annotations
 
 import json
-import re
+import logging
 from typing import Any
-from urllib.parse import quote
 
 from models import Watch
 from scrapers.base import BaseScraper
 
 
+logger = logging.getLogger(__name__)
+
+
 class HMTStoreScraper(BaseScraper):
     """
-    Scraper for https://hmtwatches.store
+    Scraper for https://www.hmtwatches.store
 
-    The store is backed by Amazon SmartPOS rather than requiring
-    browser automation.
+    The store frontend uses the SmartPOS catalogue API:
 
-    Stock priority:
-        1. additionalAttributes.isOOS
-        2. buyingOptions.singlePurchase.availability.isBuyable
-        3. buyingOptions.singlePurchase.availability.inStock
-        4. currentStock when available
+        POST https://smartpos.amazon.in/api-unauthenticated/resources/external/catalog/products
+            ?groupVariants=true
+
+    Request body:
+
+        {
+            "filter": {
+                "division": null,
+                "isBestSeller": null,
+                "isInStock": null
+            },
+            "shopId": 48236,
+            "offset": 0,
+            "limit": 10
+        }
     """
-
-    SOURCE = "hmt.store"
 
     API_URL = (
         "https://smartpos.amazon.in/"
@@ -35,7 +46,7 @@ class HMTStoreScraper(BaseScraper):
         *,
         base_url: str,
         shop_id: int = 48236,
-        page_size: int = 100,
+        page_size: int = 10,
         timeout: int = 30,
         retries: int = 3,
     ) -> None:
@@ -50,9 +61,14 @@ class HMTStoreScraper(BaseScraper):
 
     def scrape(self) -> list[Watch]:
         """
-        Fetch the complete store catalogue.
+        Fetch the complete catalogue from the store API.
 
-        The API is paginated using offset + limit.
+        Pagination continues until the API returns fewer products than
+        requested, or an empty page.
+
+        A request/API failure is allowed to propagate to the tracker so
+        the tracker can correctly treat the source as failed rather than
+        interpreting the failure as an empty catalogue.
         """
         watches: list[Watch] = []
         seen_ids: set[str] = set()
@@ -74,28 +90,41 @@ class HMTStoreScraper(BaseScraper):
                 if watch is None:
                     continue
 
-                if watch.id in seen_ids:
+                # The API can expose variant information. Keep the primary
+                # product/sku as the stable identity for the catalogue.
+                identity = (
+                    watch.id
+                    or watch.sku
+                    or watch.product_url
+                    or watch.name
+                )
+
+                identity = str(identity)
+
+                if identity in seen_ids:
                     continue
 
-                seen_ids.add(watch.id)
+                seen_ids.add(identity)
                 watches.append(watch)
 
-            # A short page means we reached the end.
+            logger.debug(
+                "HMT store page: offset=%s returned=%s total=%s",
+                offset,
+                len(products),
+                len(watches),
+            )
+
             if len(products) < self.page_size:
                 break
 
             offset += self.page_size
 
-        if not watches:
-            raise RuntimeError(
-                "HMT store returned no parseable products"
-            )
+        logger.info(
+            "HMT store returned %s products.",
+            len(watches),
+        )
 
         return watches
-
-    # ------------------------------------------------------------------
-    # API
-    # ------------------------------------------------------------------
 
     def _fetch_page(
         self,
@@ -104,492 +133,267 @@ class HMTStoreScraper(BaseScraper):
         limit: int,
     ) -> list[dict[str, Any]]:
         """
-        Fetch one SmartPOS catalogue page.
+        Fetch one page using the same request shape as the live store.
         """
         response = self.post(
             self.API_URL,
+            params={
+                "groupVariants": "true",
+            },
             json={
+                "filter": {
+                    "division": None,
+                    "isBestSeller": None,
+                    "isInStock": None,
+                },
                 "shopId": self.shop_id,
-                "filter": {},
                 "offset": offset,
                 "limit": limit,
-                "groupVariants": True,
             },
             headers={
-                "Accept": "application/json",
+                "Accept": "application/json, text/plain, */*",
                 "Content-Type": "application/json",
+                "Origin": self.base_url,
+                "Referer": f"{self.base_url}/",
             },
         )
 
         payload = response.json()
 
-        return self._extract_products(payload)
+        products = self._extract_products(payload)
 
-    @classmethod
-    def _extract_products(
-        cls,
-        payload: Any,
-    ) -> list[dict[str, Any]]:
+        if not isinstance(products, list):
+            raise ValueError(
+                "Unexpected HMT store catalogue response: "
+                f"expected a list, got {type(products).__name__}"
+            )
+
+        return [
+            product
+            for product in products
+            if isinstance(product, dict)
+        ]
+
+    @staticmethod
+    def _extract_products(payload: Any) -> list[Any]:
         """
-        Handle the response shapes used by SmartPOS.
+        Handle the current API response as well as common wrapper formats.
 
-        Normally the API returns a list, but wrappers such as
-        {products: [...]}, {results: [...]}, etc. are supported.
+        The current HMT API returns the product list directly.
         """
         if isinstance(payload, list):
-            return [
-                item
-                for item in payload
-                if isinstance(item, dict)
-            ]
+            return payload
 
         if not isinstance(payload, dict):
             return []
 
         for key in (
             "products",
-            "results",
             "items",
+            "content",
             "data",
+            "results",
         ):
             value = payload.get(key)
 
             if isinstance(value, list):
-                return [
-                    item
-                    for item in value
-                    if isinstance(item, dict)
-                ]
+                return value
 
             if isinstance(value, dict):
-                nested = cls._extract_products(value)
+                nested = HMTStoreScraper._extract_products(value)
 
                 if nested:
                     return nested
-
-        # Some APIs wrap the result one level deeper.
-        for value in payload.values():
-            if isinstance(value, dict):
-                nested = cls._extract_products(value)
-
-                if nested:
-                    return nested
-
-            elif isinstance(value, list):
-                items = [
-                    item
-                    for item in value
-                    if isinstance(item, dict)
-                ]
-
-                if items:
-                    return items
 
         return []
 
-    # ------------------------------------------------------------------
-    # Product parsing
-    # ------------------------------------------------------------------
-
-    def _parse_product(
-        self,
-        product: dict[str, Any],
-    ) -> Watch | None:
+    def _parse_product(self, product: dict[str, Any]) -> Watch | None:
         """
-        Convert one SmartPOS product into our normalized Watch model.
+        Convert one SmartPOS product into our common Watch model.
         """
         if self._is_deactivated(product):
             return None
+        
+        product_id = (
+            product.get("primaryProductId")
+            or product.get("sku")
+            or product.get("customId")
+        )
 
-        name = self.clean_text(product.get("name"))
+        name = self._clean_string(product.get("name"))
 
-        if not name:
-            return None
-
-        identity = self._product_identity(product)
-
-        if not identity:
-            return None
-
-        stock, stock_count = self._stock(product)
-
-        description = self.clean_text(
-            self._html_to_text(
-                product.get("productDescription")
+        if not product_id or not name:
+            logger.warning(
+                "Skipping HMT store product without stable ID/name: %r",
+                product,
             )
-        )
+            return None
 
-        model_number = self._extract_model_number(
-            description,
-            name,
-        )
+        sku = self._clean_string(product.get("sku"))
 
-        collection = self._extract_labeled_value(
-            description,
-            "Collection",
-        )
-
-        gender = self._extract_labeled_value(
-            description,
-            "Gender",
-        )
-
-        category = self.clean_text(
-            product.get("category")
-        ) or None
-
-        sku = self.clean_text(
-            product.get("sku")
-        ) or None
-
-        price = self.parse_price(
+        mrp = self._number_or_none(product.get("mrp"))
+        selling_price = self._number_or_none(
             product.get("sellingPrice")
         )
 
-        mrp = self.parse_price(
-            product.get("mrp")
+        if selling_price is None:
+            selling_price = mrp
+
+        in_stock, stock = self._stock(product)
+
+        image_url = self._clean_string(
+            product.get("productImageUrl")
         )
 
-        image_url = self._image_url(product)
-
-        product_url = self._product_url(
-            product,
-            identity=identity,
-            sku=sku,
+        # The store is a dynamic frontend, so the API does not expose
+        # a normal product URL in the catalogue response. Build the
+        # product URL using the product ID only when appropriate.
+        product_url = self._build_product_url(
+            product_id=str(product_id),
         )
 
         return Watch.create(
-            id=identity,
-            source=self.SOURCE,
+            id=str(product_id),
+            source="hmt.store",
             name=name,
-            model_number=model_number,
-            sku=sku,
-            price=price,
-            mrp=mrp,
             product_url=product_url,
+            in_stock=in_stock,
+            stock_count=stock,
+            sku=sku,
+            price=selling_price,
+            mrp=mrp,
             image_url=image_url,
-            in_stock=stock,
-            stock_count=stock_count,
-            category=category,
-            collection=collection,
-            gender=gender,
         )
 
-    @staticmethod
-    def _is_deactivated(
-        product: dict[str, Any],
-    ) -> bool:
-        value = product.get("deactivated")
-
-        if isinstance(value, bool):
-            return value
-
-        return str(value).strip().lower() in {
-            "true",
-            "1",
-            "yes",
-        }
-
-    # ------------------------------------------------------------------
-    # Identity
-    # ------------------------------------------------------------------
-
-    def _product_identity(
+    def _extract_stock(
         self,
         product: dict[str, Any],
-    ) -> str | None:
+    ) -> tuple[int | None, bool]:
         """
-        Prefer the stable SmartPOS primary product ID.
+        Extract stock count and in-stock status from the SmartPOS response.
 
-        SKU is the next-best identifier.
+        Priority:
+        1. Explicit additionalAttributes.isOOS=true overrides everything.
+        2. Numeric currentStock is the strongest stock signal.
+        3. Availability flags are used when currentStock is unavailable.
         """
-        primary_id = self.clean_text(
-            product.get("primaryProductId")
-        )
 
-        if primary_id:
-            return primary_id
+        additional_attributes = product.get("additionalAttributes")
 
-        sku = self.clean_text(product.get("sku"))
+        if isinstance(additional_attributes, str):
+            try:
+                additional_attributes = json.loads(additional_attributes)
+            except (TypeError, ValueError):
+                additional_attributes = {}
+        elif not isinstance(additional_attributes, dict):
+            additional_attributes = {}
 
-        if sku:
-            return sku
+        # Explicit OOS flag always wins.
+        if additional_attributes.get("isOOS") is True:
+            return 0, False
 
-        name = self.clean_text(product.get("name"))
+        stock_value = product.get("currentStock")
 
-        if name:
-            return self.stable_id(
-                source=self.SOURCE,
-                value=name,
-            )
+        if stock_value is not None:
+            try:
+                stock_count = int(stock_value)
 
-        return None
+                if stock_count > 0:
+                    return stock_count, True
 
-    # ------------------------------------------------------------------
-    # Stock
-    # ------------------------------------------------------------------
+                if stock_count == 0:
+                    return 0, False
+
+            except (TypeError, ValueError):
+                pass
+
+        buying_options = product.get("buyingOptions") or {}
+        single_purchase = buying_options.get("singlePurchase") or {}
+        availability = single_purchase.get("availability") or {}
+
+        if availability.get("isBuyable") is True:
+            return None, True
+
+        if availability.get("inStock") is True:
+            return None, True
+
+        if availability.get("isBuyable") is False:
+            return None, False
+
+        if availability.get("inStock") is False:
+            return None, False
+
+        return None, False
+
+    @staticmethod
+    def _parse_json_object(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+
+        if not isinstance(value, str) or not value.strip():
+            return {}
+
+        try:
+            parsed = json.loads(value)
+
+            if isinstance(parsed, dict):
+                return parsed
+
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+
+        return {}
+
+    def _build_product_url(self, *, product_id: str) -> str:
+        """
+        Return a useful store URL.
+
+        The catalogue API response does not provide a canonical product
+        URL, so keep the store homepage as the safe fallback.
+        """
+        return f"{self.base_url.rstrip('/')}/"
+
+    @staticmethod
+    def _clean_string(value: Any) -> str | None:
+        if value is None:
+            return None
+
+        value = str(value).strip()
+
+        return value or None
+
+    @staticmethod
+    def _number_or_none(value: Any) -> int | float | None:
+        if value is None or value == "":
+            return None
+
+        try:
+            number = float(value)
+
+        except (TypeError, ValueError):
+            return None
+
+        if number.is_integer():
+            return int(number)
+
+        return number
 
     def _stock(
         self,
         product: dict[str, Any],
     ) -> tuple[bool, int | None]:
         """
-        Determine whether the product is currently buyable.
+        Return (in_stock, stock_count).
 
-        We deliberately avoid guessing stock when the API does not
-        provide enough information.
+        Keep this helper as part of the scraper's existing interface because
+        the test suite and parser use it directly.
         """
-        additional = self._additional_attributes(product)
-
-        # Explicit OOS flag takes priority.
-        is_oos = self.as_bool(
-            additional.get("isOOS")
-        )
-
-        if is_oos is True:
-            return False, 0
-
-        availability = self._availability(product)
-
-        is_buyable = self.as_bool(
-            availability.get("isBuyable")
-        )
-
-        current_stock = self.parse_int(
-            product.get("currentStock")
-        )
-
-        if is_buyable is True:
-            if current_stock is not None:
-                if current_stock > 0:
-                    return True, current_stock
-
-                # A buyable product reporting zero stock is
-                # inconsistent, so don't claim availability.
-                return False, 0
-
-            return True, None
-
-        if is_buyable is False:
-            if current_stock is not None:
-                return False, max(current_stock, 0)
-
-            return False, 0
-
-        # Fall back to inStock when isBuyable isn't available.
-        in_stock = self.as_bool(
-            availability.get("inStock")
-        )
-
-        if in_stock is True:
-            if current_stock is not None:
-                if current_stock > 0:
-                    return True, current_stock
-
-                return False, 0
-
-            return True, None
-
-        if in_stock is False:
-            return False, 0
-
-        # Last fallback: currentStock by itself.
-        if current_stock is not None:
-            if current_stock > 0:
-                return True, current_stock
-
-            return False, 0
-
-        return False, None
+        stock_count, in_stock = self._extract_stock(product)
+        return in_stock, stock_count
 
     @staticmethod
-    def _availability(
-        product: dict[str, Any],
-    ) -> dict[str, Any]:
-        buying_options = product.get("buyingOptions")
-
-        if not isinstance(buying_options, dict):
-            return {}
-
-        single_purchase = buying_options.get(
-            "singlePurchase"
-        )
-
-        if not isinstance(single_purchase, dict):
-            return {}
-
-        availability = single_purchase.get(
-            "availability"
-        )
-
-        if not isinstance(availability, dict):
-            return {}
-
-        return availability
-
-    @staticmethod
-    def _additional_attributes(
-        product: dict[str, Any],
-    ) -> dict[str, Any]:
-        value = product.get("additionalAttributes")
-
-        if isinstance(value, dict):
-            return value
-
-        if isinstance(value, str):
-            try:
-                parsed = json.loads(value)
-
-                if isinstance(parsed, dict):
-                    return parsed
-
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        return {}
-
-    # ------------------------------------------------------------------
-    # Metadata
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _html_to_text(
-        html: Any,
-    ) -> str:
-        if not html:
-            return ""
-
-        from bs4 import BeautifulSoup
-
-        soup = BeautifulSoup(
-            str(html),
-            "lxml",
-        )
-
-        return soup.get_text(
-            " ",
-            strip=True,
-        )
-
-    @classmethod
-    def _extract_labeled_value(
-        cls,
-        text: str,
-        label: str,
-    ) -> str | None:
-        if not text:
-            return None
-
-        match = re.search(
-            rf"{re.escape(label)}\s*[:\-]\s*"
-            r"([^|;,]+?)(?=\s+[A-Z][A-Za-z ]{1,30}\s*[:\-]|$)",
-            text,
-            re.IGNORECASE,
-        )
-
-        if not match:
-            return None
-
-        value = cls.clean_text(match.group(1))
-
-        return value or None
-
-    @classmethod
-    def _extract_model_number(
-        cls,
-        description: str,
-        name: str,
-    ) -> str | None:
-        value = cls._extract_labeled_value(
-            description,
-            "Model No.",
-        )
-
-        if value:
-            return value
-
-        value = cls._extract_labeled_value(
-            description,
-            "Model No",
-        )
-
-        if value:
-            return value
-
-        # Some descriptions use "Model Number".
-        value = cls._extract_labeled_value(
-            description,
-            "Model Number",
-        )
-
-        if value:
-            return value
-
-        # Conservative fallback: common HMT model-like tokens.
-        match = re.search(
-            r"\b[A-Z]{1,6}\d{1,4}[A-Z]?\b",
-            name,
-        )
-
-        if match:
-            return match.group(0)
-
-        return None
-
-    @staticmethod
-    def _image_url(
-        product: dict[str, Any],
-    ) -> str | None:
-        for key in (
-            "productImageUrl",
-            "secondaryImageUrl",
-            "imageUrl",
-            "imageURL",
-        ):
-            value = product.get(key)
-
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-
-        images = product.get("imageUrls")
-
-        if isinstance(images, list):
-            for image in images:
-                if isinstance(image, str) and image.strip():
-                    return image.strip()
-
-        return None
-
-    # ------------------------------------------------------------------
-    # Product URL
-    # ------------------------------------------------------------------
-
-    def _product_url(
-        self,
-        product: dict[str, Any],
-        *,
-        identity: str,
-        sku: str | None,
-    ) -> str:
+    def _is_deactivated(product: dict[str, Any]) -> bool:
         """
-        Prefer a URL supplied by the API.
-
-        Otherwise construct the normal HMT store product path.
+        Return True when the store explicitly marks a product as deactivated.
         """
-        for key in (
-            "productUrl",
-            "productURL",
-            "url",
-            "productLink",
-        ):
-            value = product.get(key)
-
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-
-        slug_source = sku or identity
-
-        return (
-            f"{self.base_url}/products/"
-            f"{quote(slug_source, safe='')}"
-        )
+        return product.get("deactivated") is True

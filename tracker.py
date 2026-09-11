@@ -367,12 +367,10 @@ class Tracker:
 
         elif source == "hmt.store":
             scraper = HMTStoreScraper(
-                source_config,
+                base_url=source_config.base_url,
                 shop_id=self.config.store_shop_id,
                 page_size=self.config.store_page_size,
-                timeout_seconds=(
-                    self.config.request_timeout_seconds
-                ),
+                timeout=self.config.request_timeout_seconds,
                 retries=self.config.request_retries,
             )
 
@@ -448,7 +446,14 @@ class Tracker:
                     and not seed_only
                 )
 
+                alert_type = "new"
+
             else:
+                # Compare the previous observation with the new one before
+                # updating the catalogue.
+                was_in_stock = existing.in_stock
+                is_now_in_stock = watch.in_stock
+
                 # Preserve the catalogue's permanent identity and update
                 # the latest observation.
                 existing.update_from(
@@ -459,8 +464,22 @@ class Tracker:
                     existing
                 )
 
-                # Default behavior: existing watches never alert.
-                should_alert = False
+                # Alert once when an existing watch transitions from
+                # out-of-stock to in-stock. A watch that remains in stock
+                # will not generate an alert on every polling cycle.
+                back_in_stock = (
+                    not was_in_stock
+                    and is_now_in_stock
+                    and not seed_only
+                )
+
+                should_alert = (
+                    self.config.alert_back_in_stock
+                    and self.config.alert_only_when_in_stock
+                    and back_in_stock
+                )
+
+                alert_type = "back_in_stock"
 
         if not should_alert:
             return
@@ -484,7 +503,7 @@ class Tracker:
         # rules match it.
         alert_id = self.db.create_alert(
             watch=watch,
-            alert_type="new",
+            alert_type=alert_type,
             status="pending",
             telegram_chat_id=(
                 self.config.telegram.chat_id
@@ -496,7 +515,7 @@ class Tracker:
 
         candidate = AlertCandidate(
             watch=watch,
-            alert_type="new",
+            alert_type=alert_type,
             rule_ids=[
                 rule.id
                 for rule in matching_rules
@@ -504,7 +523,8 @@ class Tracker:
         )
 
         logger.info(
-            "Created alert %s for new watch %s.",
+            "Created %s alert %s for watch %s.",
+            alert_type,
             alert_id,
             watch.name,
         )

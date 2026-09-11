@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from html import unescape
@@ -296,20 +297,15 @@ class OfficialHMTScraper:
 
         price = self._parse_price(card)
 
+        model_number = self._extract_model_number(name)
+
         product_id = self._extract_product_id(
             card,
             product_url,
+            name=name,
+            model_number=model_number,
+            image_url=image_url,
         )
-
-        if not product_id:
-            # Product overview IDs are often encrypted values. When no
-            # usable ID can be recovered, the URL itself remains a
-            # deterministic identity.
-            product_id = self._stable_id_from_url(
-                product_url
-            )
-
-        model_number = self._extract_model_number(name)
 
         in_stock, stock_count = self._parse_stock(card)
 
@@ -424,66 +420,76 @@ class OfficialHMTScraper:
         self,
         card: Any,
         product_url: str,
-    ) -> str | None:
+        *,
+        name: str,
+        model_number: str | None,
+        image_url: str | None,
+    ) -> str:
         """
-        Extract the product identifier used by HMT.
+        Return the persistent product identity used by HMT.
 
-        Prefer onclick IDs because the uploaded source shows calls such
-        as getProductDetails(919) and add_cart(919, '1').
+        The live HMT catalogue exposes a stable numeric product ID in the
+        notifyMe(<id>) JavaScript handler on out-of-stock/notify-me cards.
+        The same ID is present on both duplicate HTML wrappers for a product.
+
+        We therefore prefer notifyMe IDs, followed by the other numeric IDs
+        exposed by the page. Encrypted product_overview URL parameters are
+        deliberately never used as persistent catalogue IDs because they can
+        change between requests.
         """
 
+        # Out-of-stock products expose their stable HMT product ID through
+        # notifyMe(<id>). This is currently the most reliable identifier
+        # observed in the live catalogue.
+        for element in card.select('[onclick*="notifyMe("]'):
+            onclick = element.get("onclick", "")
+            match = re.search(
+                r'notifyMe\(\s*[\'"]?(\d+)',
+                onclick,
+            )
+            if match:
+                return match.group(1)
+
+        # In-stock products may expose the same stable numeric ID through
+        # add_cart(<id>, ...) or getProductDetails(<id>).
         for element in card.select(
             '[onclick*="getProductDetails("], '
             '[onclick*="add_cart("]'
         ):
             onclick = element.get("onclick", "")
-
             match = re.search(
-                r"(?:getProductDetails|add_cart)\(\s*['\"]?(\d+)",
+                r'(?:getProductDetails|add_cart)\(\s*[\'"]?(\d+)',
                 onclick,
             )
-
             if match:
                 return match.group(1)
 
-        # Some cards may have an explicit data/product ID.
+        # Some page variants may expose the numeric ID as a data attribute.
         for attribute in (
             "data-product-id",
             "data-id",
             "product-id",
         ):
-            element = card.select_one(
-                f"[{attribute}]"
-            )
-
+            element = card.select_one(f"[{attribute}]")
             if element is not None:
                 value = element.get(attribute)
-
                 if value:
-                    return str(value).strip()
+                    value = str(value).strip()
+                    if value.isdigit():
+                        return value
 
-        # Fall back to query-string ID from product overview.
-        match = re.search(
-            r"[?&]id=([^&#]+)",
-            product_url,
-        )
+        # Last-resort deterministic identity. Do not use the encrypted URL
+        # parameter because it is not stable across requests.
+        identity_parts = [
+            self._clean_text(name).casefold(),
+            self._clean_text(model_number or "").casefold(),
+            self._clean_text(image_url or "").casefold(),
+        ]
+        identity_key = "|".join(identity_parts)
 
-        if match:
-            return match.group(1)
-
-        return None
-
-    @staticmethod
-    def _stable_id_from_url(url: str) -> str:
-        """Create a deterministic fallback identifier from a URL."""
-
-        # Python's hash() is intentionally randomized between processes,
-        # so do not use it for persistent product IDs.
-        import hashlib
-
-        return hashlib.sha256(
-            url.encode("utf-8")
-        ).hexdigest()[:24]
+        return "fp:" + hashlib.sha256(
+            identity_key.encode("utf-8")
+        ).hexdigest()[:32]
 
     # ------------------------------------------------------------------
     # Product fields

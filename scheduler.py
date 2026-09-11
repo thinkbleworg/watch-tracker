@@ -167,8 +167,8 @@ class TrackerScheduler:
                 "Tracker run completed: success=%s sources=%s "
                 "new_watches=%s alerts=%s",
                 result.success,
-                result.sources_succeeded,
-                result.new_watches,
+                len(result.sources),
+                result.new_products,
                 result.alerts_created,
             )
 
@@ -191,12 +191,24 @@ class TrackerScheduler:
             return None
 
         return {
+            "run_id": result.run_id,
             "success": result.success,
-            "started_at": result.started_at,
-            "finished_at": result.finished_at,
-            "sources_succeeded": result.sources_succeeded,
-            "sources_failed": result.sources_failed,
-            "new_watches": result.new_watches,
+            "sources": [
+                {
+                    "source": source.source,
+                    "success": source.success,
+                    "products_found": source.products_found,
+                    "new_products": source.new_products,
+                    "in_stock_products": source.in_stock_products,
+                    "alerts_created": source.alerts_created,
+                    "error": source.error,
+                }
+                for source in result.sources
+            ],
+            "total_products": result.total_products,
+            "new_products": result.new_products,
+            "in_stock_products": result.in_stock_products,
             "alerts_created": result.alerts_created,
-            "errors": result.errors,
+            "first_run_seed": result.first_run_seed,
+            "error": result.error,
         }

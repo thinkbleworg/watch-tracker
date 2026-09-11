@@ -79,6 +79,7 @@ class BaseScraper(ABC):
         self,
         path_or_url: str,
         *,
+        params: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
@@ -88,6 +89,7 @@ class BaseScraper(ABC):
         return self._request(
             "POST",
             url,
+            params=params,
             data=data,
             json=json,
             headers=headers,

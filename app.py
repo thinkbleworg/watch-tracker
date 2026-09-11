@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
 
 from config import config
 from database import Database
@@ -35,7 +37,7 @@ telegram = TelegramNotifier(db)
 
 scheduler = TrackerScheduler(
     tracker,
-    interval_seconds=config.scheduler_interval_seconds,
+    interval_seconds=config.scrape_interval_seconds,
     alert_callback=telegram.send_candidate,
 )
 
@@ -52,7 +54,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting HMT Watch Tracker")
 
     scheduler.start(
-        run_immediately=config.scheduler_startup_run,
+        run_immediately=config.run_on_startup,
     )
 
     yield
@@ -89,236 +91,16 @@ def health() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Dashboard
 # ---------------------------------------------------------------------------
+templates = Jinja2Templates(directory="templates")
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard() -> str:
-    """
-    Minimal dashboard.
-
-    This is deliberately small for now. The full UI will be separated
-    into templates/static files later.
-    """
-    stats = db.get_stats()
-    scheduler_status = scheduler.status()
-
-    telegram_status = "Configured" if telegram.enabled else "Not configured"
-
-    return f"""
-<!doctype html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-
-    <title>HMT Watch Tracker</title>
-
-    <style>
-        :root {{
-            color-scheme: light;
-            font-family:
-                Inter, system-ui, -apple-system, BlinkMacSystemFont,
-                "Segoe UI", sans-serif;
-        }}
-
-        body {{
-            margin: 0;
-            background: #f5f6f8;
-            color: #171717;
-        }}
-
-        header {{
-            background: #111827;
-            color: white;
-            padding: 24px 32px;
-        }}
-
-        header h1 {{
-            margin: 0 0 6px;
-            font-size: 26px;
-        }}
-
-        header p {{
-            margin: 0;
-            opacity: 0.75;
-        }}
-
-        main {{
-            max-width: 1200px;
-            margin: 30px auto;
-            padding: 0 20px;
-        }}
-
-        .grid {{
-            display: grid;
-            grid-template-columns:
-                repeat(auto-fit, minmax(190px, 1fr));
-            gap: 16px;
-        }}
-
-        .card {{
-            background: white;
-            border-radius: 12px;
-            padding: 20px;
-            box-shadow:
-                0 1px 3px rgba(0, 0, 0, 0.08);
-        }}
-
-        .metric {{
-            font-size: 30px;
-            font-weight: 700;
-            margin-top: 8px;
-        }}
-
-        .label {{
-            color: #6b7280;
-            font-size: 14px;
-        }}
-
-        button {{
-            border: 0;
-            border-radius: 8px;
-            padding: 11px 16px;
-            cursor: pointer;
-            font-weight: 600;
-            background: #111827;
-            color: white;
-        }}
-
-        button:hover {{
-            opacity: 0.9;
-        }}
-
-        .actions {{
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-            margin-top: 24px;
-        }}
-
-        pre {{
-            background: #111827;
-            color: #e5e7eb;
-            padding: 16px;
-            border-radius: 10px;
-            overflow: auto;
-        }}
-
-        .status {{
-            margin-top: 20px;
-            padding: 14px;
-            background: white;
-            border-radius: 10px;
-        }}
-    </style>
-</head>
-
-<body>
-
-<header>
-    <h1>⌚ HMT Watch Tracker</h1>
-    <p>
-        Monitoring HMT Watches and HMT Watches Store
-    </p>
-</header>
-
-<main>
-
-    <div class="grid">
-
-        <div class="card">
-            <div class="label">Catalogue</div>
-            <div class="metric">{stats.get("watch_count", 0)}</div>
-        </div>
-
-        <div class="card">
-            <div class="label">In Stock</div>
-            <div class="metric">{stats.get("in_stock_count", 0)}</div>
-        </div>
-
-        <div class="card">
-            <div class="label">Tracked</div>
-            <div class="metric">{stats.get("tracked_count", 0)}</div>
-        </div>
-
-        <div class="card">
-            <div class="label">Pending Alerts</div>
-            <div class="metric">{stats.get("pending_alert_count", 0)}</div>
-        </div>
-
-    </div>
-
-    <div class="actions">
-        <button onclick="runNow()">▶ Run Now</button>
-        <button onclick="testTelegram()">✈ Test Telegram</button>
-        <button onclick="location.href='/api/watches'">
-            Catalogue JSON
-        </button>
-        <button onclick="location.href='/api/alerts'">
-            Alerts JSON
-        </button>
-    </div>
-
-    <div class="status">
-        <strong>Scheduler:</strong>
-        {"Running" if scheduler_status["running"] else "Stopped"}
-        <br>
-
-        <strong>Interval:</strong>
-        {scheduler_status["interval_seconds"]} seconds
-        <br>
-
-        <strong>Telegram:</strong>
-        {telegram_status}
-    </div>
-
-    <div id="result" class="status" style="display:none;"></div>
-
-</main>
-
-<script>
-async function runNow() {{
-    const result = document.getElementById("result");
-
-    result.style.display = "block";
-    result.innerText = "Running tracker...";
-
-    try {{
-        const response = await fetch("/api/run", {{
-            method: "POST"
-        }});
-
-        const data = await response.json();
-
-        result.innerText = JSON.stringify(data, null, 2);
-    }} catch (error) {{
-        result.innerText = "Run failed: " + error;
-    }}
-}}
-
-async function testTelegram() {{
-    const result = document.getElementById("result");
-
-    result.style.display = "block";
-    result.innerText = "Sending Telegram test...";
-
-    try {{
-        const response = await fetch("/api/telegram/test", {{
-            method: "POST"
-        }});
-
-        const data = await response.json();
-
-        result.innerText = JSON.stringify(data, null, 2);
-    }} catch (error) {{
-        result.innerText = "Telegram test failed: " + error;
-    }}
-}}
-</script>
-
-</body>
-</html>
-"""
-
+def dashboard(request: Request):
+    return templates.TemplateResponse(
+        "dashboard.html",
+        {
+            "request": request,
+        },
+    )
 
 # ---------------------------------------------------------------------------
 # Scheduler
@@ -326,34 +108,42 @@ async function testTelegram() {{
 
 @app.get("/api/status")
 def api_status() -> dict[str, Any]:
-    """
-    Return overall application status.
-    """
+    """Return overall application status in a dashboard-friendly shape."""
+    scheduler_status = scheduler.status()
+    last_run_at = scheduler_status.get("last_run_at")
+
+    last_run = None
+    next_run = None
+
+    if last_run_at is not None:
+        last_run_dt = datetime.fromtimestamp(
+            float(last_run_at),
+            tz=timezone.utc,
+        )
+        last_run = last_run_dt.isoformat()
+        next_run_dt = last_run_dt.timestamp() + float(
+            scheduler_status["interval_seconds"]
+        )
+        next_run = datetime.fromtimestamp(
+            next_run_dt,
+            tz=timezone.utc,
+        ).isoformat()
+
+    running = bool(scheduler_status.get("running"))
+
     return {
-        "scheduler": scheduler.status(),
+        "scheduler": scheduler_status,
+        "scheduler_running": running,
+        "running": running,
+        "last_run": last_run,
+        "last_completed_run": last_run,
+        "last_run_at": last_run,
+        "next_run": next_run,
         "telegram": {
             "enabled": telegram.enabled,
         },
         "database": db.get_stats(),
     }
-
-
-@app.post("/api/run")
-def api_run_now() -> dict[str, Any]:
-    """
-    Trigger a tracker run immediately.
-    """
-    try:
-        result = scheduler.run_now()
-    except Exception as exc:
-        logger.exception("Manual tracker run failed")
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(exc),
-        ) from exc
-
-    return scheduler._result_to_dict(result) or {}
 
 
 # ---------------------------------------------------------------------------
@@ -643,15 +433,15 @@ def api_config() -> dict[str, Any]:
     """
     return {
         "scheduler_interval_seconds": (
-            config.scheduler_interval_seconds
+            config.scrape_interval_seconds
         ),
         "scheduler_startup_run": (
-            config.scheduler_startup_run
+            config.run_on_startup
         ),
-        "http_timeout": config.http_timeout,
-        "http_retries": config.http_retries,
+        "http_timeout": config.request_timeout_seconds,
+        "http_retries":config.request_retries,
         "alerts": {
-            "seed_silently": config.alert_seed_silently,
+            "seed_silently": config.seed_catalogue_silently,
             "new_products_only": config.alert_new_products_only,
             "only_when_in_stock": config.alert_only_when_in_stock,
             "back_in_stock": config.alert_back_in_stock,
@@ -681,7 +471,16 @@ def api_config() -> dict[str, Any]:
 
 @app.get("/api/stats")
 def api_stats() -> dict[str, Any]:
-    """
-    Return dashboard statistics.
-    """
-    return db.get_stats()
+    """Return dashboard statistics using UI-compatible field names."""
+    stats = db.get_stats()
+    rules = db.get_tracking_rules()
+    pending_alerts = db.get_alerts(
+        status="pending",
+        limit=1000,
+    )
+
+    return {
+        **stats,
+        "tracked": sum(1 for rule in rules if rule.enabled),
+        "pending_alerts": len(pending_alerts),
+    }

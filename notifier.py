@@ -39,7 +39,7 @@ class TelegramNotifier:
         self.db = db
         self.bot_token = bot_token or config.telegram.bot_token
         self.chat_id = chat_id or config.telegram.chat_id
-        self.timeout = timeout or config.http_timeout
+        self.timeout = timeout or config.request_timeout_seconds
 
         self._session = requests.Session()
         self._lock = threading.Lock()
