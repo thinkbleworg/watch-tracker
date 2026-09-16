@@ -1,0 +1,1129 @@
+{% extends "base.html" %}
+
+{% block title %}
+    Tracking — HMT Watch Tracker
+{% endblock %}
+
+{% block nav_tracking %}
+    active
+{% endblock %}
+
+{% block page_header %}
+<div>
+    <h1>Tracking</h1>
+    <p>
+        Choose which HMT watches should generate availability alerts.
+    </p>
+</div>
+{% endblock %}
+
+
+{% block content %}
+
+<div class="page-intro">
+    <div>
+        <h2>Tracking Rules</h2>
+        <p>
+            Create rules using keywords, exclusions, product IDs,
+            source selection, and minimum stock.
+        </p>
+    </div>
+
+    <button
+        type="button"
+        class="button button-primary"
+        onclick="newTrackingRule()"
+    >
+        + New Rule
+    </button>
+</div>
+
+
+<!-- Rule editor -->
+<div
+    id="tracking-editor"
+    class="panel"
+    style="display: none;"
+>
+    <div class="panel-header">
+        <div>
+            <h3 id="editor-title">New Tracking Rule</h3>
+            <p>
+                Watches matching this rule can generate stock alerts.
+            </p>
+        </div>
+    </div>
+
+    <form id="tracking-form">
+
+        <input
+            type="hidden"
+            id="rule-id"
+        >
+
+        <div class="filter-grid">
+
+            <div class="form-group">
+                <label for="rule-name">
+                    Rule name
+                </label>
+
+                <input
+                    id="rule-name"
+                    name="name"
+                    type="text"
+                    class="form-input"
+                    placeholder="Example: Pilot watches"
+                    required
+                >
+            </div>
+
+
+            <div class="form-group">
+                <label for="rule-source">
+                    Source
+                </label>
+
+                <select
+                    id="rule-source"
+                    name="source"
+                    class="form-select"
+                >
+                    <option value="">
+                        Both sources
+                    </option>
+
+                    <option value="hmt.in">
+                        HMT Watches
+                    </option>
+
+                    <option value="hmt.store">
+                        HMT Watches Store
+                    </option>
+                </select>
+            </div>
+
+
+            <div class="form-group">
+                <label for="rule-minimum-stock">
+                    Minimum stock
+                </label>
+
+                <input
+                    id="rule-minimum-stock"
+                    name="minimum_stock"
+                    type="number"
+                    class="form-input"
+                    min="1"
+                    step="1"
+                    value="1"
+                >
+            </div>
+
+
+            <div class="form-group">
+                <label>
+                    Enabled
+                </label>
+
+                <label
+                    style="
+                        display: flex;
+                        align-items: center;
+                        gap: 8px;
+                        min-height: 42px;
+                    "
+                >
+                    <input
+                        id="rule-enabled"
+                        name="enabled"
+                        type="checkbox"
+                        checked
+                    >
+
+                    <span>
+                        Generate alerts for matching watches
+                    </span>
+                </label>
+            </div>
+
+        </div>
+
+
+        <div class="filter-grid">
+
+            <div class="form-group">
+                <label for="rule-include">
+                    Include keywords
+                </label>
+
+                <textarea
+                    id="rule-include"
+                    name="include_keywords"
+                    class="form-input"
+                    rows="5"
+                    placeholder="One keyword per line&#10;&#10;Pilot&#10;Janata&#10;Mechanical"
+                ></textarea>
+
+                <small>
+                    A watch must match at least one included keyword
+                    when keywords are specified.
+                </small>
+            </div>
+
+
+            <div class="form-group">
+                <label for="rule-exclude">
+                    Exclude keywords
+                </label>
+
+                <textarea
+                    id="rule-exclude"
+                    name="exclude_keywords"
+                    class="form-input"
+                    rows="5"
+                    placeholder="One keyword per line&#10;&#10;Ladies&#10;Quartz"
+                ></textarea>
+
+                <small>
+                    Matching watches containing an excluded keyword
+                    will be ignored.
+                </small>
+            </div>
+
+        </div>
+
+
+        <div class="form-group">
+            <label for="rule-product-ids">
+                Explicit product IDs
+            </label>
+
+            <textarea
+                id="rule-product-ids"
+                name="product_ids"
+                class="form-input"
+                rows="4"
+                placeholder="One product ID per line"
+            ></textarea>
+
+            <small>
+                Use this when you want to track specific catalogue
+                products regardless of their name.
+            </small>
+        </div>
+
+
+        <div
+            class="filter-actions"
+            style="
+                display: flex;
+                gap: 10px;
+                margin-top: 18px;
+            "
+        >
+            <button
+                type="submit"
+                class="button button-primary"
+            >
+                Save Rule
+            </button>
+
+            <button
+                type="button"
+                class="button"
+                onclick="closeTrackingEditor()"
+            >
+                Cancel
+            </button>
+        </div>
+
+    </form>
+</div>
+
+
+<!-- Rules -->
+<div
+    id="tracking-loading"
+    class="loading-state"
+>
+    Loading tracking rules...
+</div>
+
+<div
+    id="tracking-error"
+    class="error-state"
+    style="display: none;"
+></div>
+
+<div
+    id="tracking-empty"
+    class="empty-state"
+    style="display: none;"
+>
+    <h3>No tracking rules</h3>
+
+    <p>
+        Create a rule to tell the tracker which watches you want
+        to monitor.
+    </p>
+
+    <button
+        type="button"
+        class="button button-primary"
+        onclick="newTrackingRule()"
+    >
+        Create your first rule
+    </button>
+</div>
+
+<div
+    id="tracking-rules"
+    style="display: none;"
+></div>
+
+
+<!-- Information -->
+<div
+    class="panel"
+    style="margin-top: 24px;"
+>
+    <div class="panel-header">
+        <div>
+            <h3>How tracking works</h3>
+        </div>
+    </div>
+
+    <div style="line-height: 1.7;">
+
+        <p>
+            <strong>Include keywords</strong> let you track watches
+            whose name or other matching fields contain specific
+            terms.
+        </p>
+
+        <p>
+            <strong>Exclude keywords</strong> prevent unwanted watches
+            from matching a rule.
+        </p>
+
+        <p>
+            <strong>Product IDs</strong> allow you to track specific
+            products directly.
+        </p>
+
+        <p>
+            <strong>Minimum stock</strong> prevents an alert when the
+            available quantity is below your chosen threshold.
+        </p>
+
+        <p>
+            You can disable a rule temporarily without deleting it.
+        </p>
+
+    </div>
+</div>
+
+{% endblock %}
+
+
+{% block scripts %}
+
+<script>
+
+"use strict";
+
+
+let trackingRules = [];
+
+
+/* ============================================================
+   Helpers
+   ============================================================ */
+
+function normaliseList(value) {
+    if (Array.isArray(value)) {
+        return value
+            .map(item => String(item).trim())
+            .filter(Boolean);
+    }
+
+    if (!value) {
+        return [];
+    }
+
+    return String(value)
+        .split(/[\n,]+/)
+        .map(item => item.trim())
+        .filter(Boolean);
+}
+
+
+function listToText(value) {
+    return normaliseList(value).join("\n");
+}
+
+
+function escapeValue(value) {
+    return value === null || value === undefined
+        ? ""
+        : String(value);
+}
+
+
+function sourceLabel(source) {
+    if (!source) {
+        return "Both sources";
+    }
+
+    if (source === "hmt.in") {
+        return "HMT Watches";
+    }
+
+    if (source === "hmt.store") {
+        return "HMT Watches Store";
+    }
+
+    return source;
+}
+
+
+/* ============================================================
+   Load rules
+   ============================================================ */
+
+async function loadTrackingRules() {
+
+    const loading = document.getElementById(
+        "tracking-loading"
+    );
+
+    const error = document.getElementById(
+        "tracking-error"
+    );
+
+    const empty = document.getElementById(
+        "tracking-empty"
+    );
+
+    const container = document.getElementById(
+        "tracking-rules"
+    );
+
+    loading.style.display = "block";
+    error.style.display = "none";
+    empty.style.display = "none";
+    container.style.display = "none";
+
+    try {
+
+        const data = await apiGet("/api/tracking");
+
+        trackingRules = Array.isArray(data.rules)
+            ? data.rules
+            : [];
+
+        loading.style.display = "none";
+
+        if (trackingRules.length === 0) {
+            empty.style.display = "block";
+            return;
+        }
+
+        renderTrackingRules();
+
+        container.style.display = "block";
+
+    } catch (err) {
+
+        console.error(
+            "Unable to load tracking rules:",
+            err
+        );
+
+        loading.style.display = "none";
+
+        error.textContent =
+            err.message ||
+            "Unable to load tracking rules.";
+
+        error.style.display = "block";
+    }
+}
+
+
+/* ============================================================
+   Render
+   ============================================================ */
+
+function renderTrackingRules() {
+
+    const container = document.getElementById(
+        "tracking-rules"
+    );
+
+    if (!trackingRules.length) {
+        container.innerHTML = "";
+        return;
+    }
+
+    container.innerHTML = trackingRules.map(
+        (rule) => {
+
+            const includeKeywords =
+                normaliseList(
+                    rule.include_keywords
+                );
+
+            const excludeKeywords =
+                normaliseList(
+                    rule.exclude_keywords
+                );
+
+            const productIds =
+                normaliseList(
+                    rule.product_ids
+                );
+
+            const enabled =
+                Boolean(rule.enabled);
+
+            const statusClass =
+                enabled
+                    ? "badge badge-success"
+                    : "badge";
+
+            const statusText =
+                enabled
+                    ? "Enabled"
+                    : "Disabled";
+
+            const includeText =
+                includeKeywords.length
+                    ? includeKeywords.join(", ")
+                    : "Any watch";
+
+            const excludeText =
+                excludeKeywords.length
+                    ? excludeKeywords.join(", ")
+                    : "None";
+
+            const productText =
+                productIds.length
+                    ? productIds.join(", ")
+                    : "None";
+
+            return `
+                <div
+                    class="panel"
+                    style="margin-bottom: 16px;"
+                >
+
+                    <div
+                        class="panel-header"
+                        style="
+                            display: flex;
+                            justify-content: space-between;
+                            align-items: flex-start;
+                            gap: 16px;
+                        "
+                    >
+
+                        <div>
+
+                            <div
+                                style="
+                                    display: flex;
+                                    align-items: center;
+                                    gap: 10px;
+                                    flex-wrap: wrap;
+                                "
+                            >
+                                <h3>
+                                    ${escapeHtml(
+                                        escapeValue(rule.name)
+                                    )}
+                                </h3>
+
+                                <span
+                                    class="${statusClass}"
+                                >
+                                    ${statusText}
+                                </span>
+                            </div>
+
+                            <p>
+                                ${escapeHtml(
+                                    sourceLabel(rule.source)
+                                )}
+                            </p>
+
+                        </div>
+
+
+                        <div
+                            style="
+                                display: flex;
+                                gap: 8px;
+                                flex-wrap: wrap;
+                            "
+                        >
+
+                            <button
+                                type="button"
+                                class="button"
+                                onclick="editTrackingRule('${escapeHtml(rule.id)}')"
+                            >
+                                Edit
+                            </button>
+
+                            <button
+                                type="button"
+                                class="button"
+                                onclick="toggleTrackingRule('${escapeHtml(rule.id)}')"
+                            >
+                                ${enabled
+                                    ? "Disable"
+                                    : "Enable"}
+                            </button>
+
+                            <button
+                                type="button"
+                                class="button"
+                                onclick="deleteTrackingRule('${escapeHtml(rule.id)}')"
+                            >
+                                Delete
+                            </button>
+
+                        </div>
+
+                    </div>
+
+
+                    <div
+                        class="filter-grid"
+                        style="margin-top: 16px;"
+                    >
+
+                        <div>
+                            <strong>
+                                Include
+                            </strong>
+
+                            <div style="margin-top: 6px;">
+                                ${escapeHtml(
+                                    includeText
+                                )}
+                            </div>
+                        </div>
+
+
+                        <div>
+                            <strong>
+                                Exclude
+                            </strong>
+
+                            <div style="margin-top: 6px;">
+                                ${escapeHtml(
+                                    excludeText
+                                )}
+                            </div>
+                        </div>
+
+
+                        <div>
+                            <strong>
+                                Product IDs
+                            </strong>
+
+                            <div style="margin-top: 6px;">
+                                ${escapeHtml(
+                                    productText
+                                )}
+                            </div>
+                        </div>
+
+
+                        <div>
+                            <strong>
+                                Minimum stock
+                            </strong>
+
+                            <div style="margin-top: 6px;">
+                                ${Number(
+                                    rule.minimum_stock || 1
+                                )}
+                            </div>
+                        </div>
+
+                    </div>
+
+                </div>
+            `;
+        }
+    ).join("");
+}
+
+
+/* ============================================================
+   Editor
+   ============================================================ */
+
+function newTrackingRule() {
+
+    document.getElementById(
+        "editor-title"
+    ).textContent = "New Tracking Rule";
+
+    document.getElementById(
+        "rule-id"
+    ).value = "";
+
+    document.getElementById(
+        "rule-name"
+    ).value = "";
+
+    document.getElementById(
+        "rule-source"
+    ).value = "";
+
+    document.getElementById(
+        "rule-minimum-stock"
+    ).value = "1";
+
+    document.getElementById(
+        "rule-enabled"
+    ).checked = true;
+
+    document.getElementById(
+        "rule-include"
+    ).value = "";
+
+    document.getElementById(
+        "rule-exclude"
+    ).value = "";
+
+    document.getElementById(
+        "rule-product-ids"
+    ).value = "";
+
+    document.getElementById(
+        "tracking-editor"
+    ).style.display = "block";
+
+    document.getElementById(
+        "rule-name"
+    ).focus();
+
+    window.scrollTo({
+        top: 0,
+        behavior: "smooth"
+    });
+}
+
+
+function closeTrackingEditor() {
+
+    document.getElementById(
+        "tracking-editor"
+    ).style.display = "none";
+}
+
+
+function editTrackingRule(ruleId) {
+
+    const rule = trackingRules.find(
+        item => String(item.id) === String(ruleId)
+    );
+
+    if (!rule) {
+        showNotification(
+            "Tracking rule not found.",
+            "error"
+        );
+        return;
+    }
+
+    document.getElementById(
+        "editor-title"
+    ).textContent = "Edit Tracking Rule";
+
+    document.getElementById(
+        "rule-id"
+    ).value = escapeValue(rule.id);
+
+    document.getElementById(
+        "rule-name"
+    ).value = escapeValue(rule.name);
+
+    document.getElementById(
+        "rule-source"
+    ).value = escapeValue(rule.source);
+
+    document.getElementById(
+        "rule-minimum-stock"
+    ).value =
+        Number(rule.minimum_stock || 1);
+
+    document.getElementById(
+        "rule-enabled"
+    ).checked =
+        Boolean(rule.enabled);
+
+    document.getElementById(
+        "rule-include"
+    ).value =
+        listToText(rule.include_keywords);
+
+    document.getElementById(
+        "rule-exclude"
+    ).value =
+        listToText(rule.exclude_keywords);
+
+    document.getElementById(
+        "rule-product-ids"
+    ).value =
+        listToText(rule.product_ids);
+
+    document.getElementById(
+        "tracking-editor"
+    ).style.display = "block";
+
+    window.scrollTo({
+        top: 0,
+        behavior: "smooth"
+    });
+}
+
+
+/* ============================================================
+   Save
+   ============================================================ */
+
+async function saveTrackingRule(event) {
+
+    event.preventDefault();
+
+    const id =
+        document.getElementById(
+            "rule-id"
+        ).value.trim();
+
+    const name =
+        document.getElementById(
+            "rule-name"
+        ).value.trim();
+
+    const source =
+        document.getElementById(
+            "rule-source"
+        ).value.trim();
+
+    const minimumStock =
+        Number(
+            document.getElementById(
+                "rule-minimum-stock"
+            ).value || 1
+        );
+
+    const enabled =
+        document.getElementById(
+            "rule-enabled"
+        ).checked;
+
+    const includeKeywords =
+        normaliseList(
+            document.getElementById(
+                "rule-include"
+            ).value
+        );
+
+    const excludeKeywords =
+        normaliseList(
+            document.getElementById(
+                "rule-exclude"
+            ).value
+        );
+
+    const productIds =
+        normaliseList(
+            document.getElementById(
+                "rule-product-ids"
+            ).value
+        );
+
+
+    if (!name) {
+        showNotification(
+            "Please enter a rule name.",
+            "error"
+        );
+        return;
+    }
+
+
+    if (
+        !Number.isInteger(minimumStock) ||
+        minimumStock < 1
+    ) {
+        showNotification(
+            "Minimum stock must be at least 1.",
+            "error"
+        );
+        return;
+    }
+
+
+    const payload = {
+        name: name,
+        enabled: enabled,
+        source: source || null,
+        include_keywords: includeKeywords,
+        exclude_keywords: excludeKeywords,
+        product_ids: productIds,
+        minimum_stock: minimumStock
+    };
+
+
+    try {
+
+        if (id) {
+
+            await fetchTrackingApi(
+                `/api/tracking/${encodeURIComponent(id)}`,
+                "PUT",
+                payload
+            );
+
+            showNotification(
+                "Tracking rule updated.",
+                "success"
+            );
+
+        } else {
+
+            await fetchTrackingApi(
+                "/api/tracking",
+                "POST",
+                payload
+            );
+
+            showNotification(
+                "Tracking rule created.",
+                "success"
+            );
+        }
+
+        closeTrackingEditor();
+
+        await loadTrackingRules();
+
+    } catch (err) {
+
+        console.error(
+            "Unable to save tracking rule:",
+            err
+        );
+
+        showNotification(
+            err.message ||
+            "Unable to save tracking rule.",
+            "error"
+        );
+    }
+}
+
+
+/* ============================================================
+   Toggle
+   ============================================================ */
+
+async function toggleTrackingRule(ruleId) {
+
+    const rule = trackingRules.find(
+        item => String(item.id) === String(ruleId)
+    );
+
+    if (!rule) {
+        showNotification(
+            "Tracking rule not found.",
+            "error"
+        );
+        return;
+    }
+
+
+    const payload = {
+        name: rule.name,
+        enabled: !Boolean(rule.enabled),
+        source: rule.source || null,
+        include_keywords:
+            normaliseList(rule.include_keywords),
+        exclude_keywords:
+            normaliseList(rule.exclude_keywords),
+        product_ids:
+            normaliseList(rule.product_ids),
+        minimum_stock:
+            Number(rule.minimum_stock || 1)
+    };
+
+
+    try {
+
+        await fetchTrackingApi(
+            `/api/tracking/${encodeURIComponent(ruleId)}`,
+            "PUT",
+            payload
+        );
+
+        showNotification(
+            rule.enabled
+                ? "Tracking rule disabled."
+                : "Tracking rule enabled.",
+            "success"
+        );
+
+        await loadTrackingRules();
+
+    } catch (err) {
+
+        console.error(
+            "Unable to toggle tracking rule:",
+            err
+        );
+
+        showNotification(
+            err.message ||
+            "Unable to update tracking rule.",
+            "error"
+        );
+    }
+}
+
+
+/* ============================================================
+   Delete
+   ============================================================ */
+
+async function deleteTrackingRule(ruleId) {
+
+    const rule = trackingRules.find(
+        item => String(item.id) === String(ruleId)
+    );
+
+    if (!rule) {
+        return;
+    }
+
+
+    const confirmed = window.confirm(
+        `Delete tracking rule "${rule.name}"?`
+    );
+
+    if (!confirmed) {
+        return;
+    }
+
+
+    try {
+
+        await fetchTrackingApi(
+            `/api/tracking/${encodeURIComponent(ruleId)}`,
+            "DELETE"
+        );
+
+        showNotification(
+            "Tracking rule deleted.",
+            "success"
+        );
+
+        await loadTrackingRules();
+
+    } catch (err) {
+
+        console.error(
+            "Unable to delete tracking rule:",
+            err
+        );
+
+        showNotification(
+            err.message ||
+            "Unable to delete tracking rule.",
+            "error"
+        );
+    }
+}
+
+
+/* ============================================================
+   Tracking API helper
+   ============================================================ */
+
+async function fetchTrackingApi(
+    url,
+    method,
+    body = null
+) {
+
+    const options = {
+        method: method,
+        headers: {
+            "Accept": "application/json"
+        }
+    };
+
+
+    if (body !== null) {
+
+        options.headers[
+            "Content-Type"
+        ] = "application/json";
+
+        options.body =
+            JSON.stringify(body);
+    }
+
+
+    const response =
+        await fetch(url, options);
+
+    const data =
+        await readJsonResponse(response);
+
+
+    if (!response.ok) {
+
+        throw new Error(
+            data.detail ||
+            data.error ||
+            `Request failed: ${response.status}`
+        );
+    }
+
+
+    return data;
+}
+
+
+/* ============================================================
+   Startup
+   ============================================================ */
+
+document.addEventListener(
+    "DOMContentLoaded",
+    () => {
+
+        document
+            .getElementById("tracking-form")
+            .addEventListener(
+                "submit",
+                saveTrackingRule
+            );
+
+        loadTrackingRules();
+    }
+);
+
+</script>
+
+{% endblock %}

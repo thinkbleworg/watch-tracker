@@ -1,245 +1,423 @@
-"""
-Notification Manager
+from __future__ import annotations
 
-Currently supports Telegram.
+import html
+import logging
+import threading
+from typing import Any
 
-Future:
-    - WhatsApp
-    - Discord
-    - Email
-"""
-
-import time
 import requests
 
-from config import (
-    BOT_TOKEN,
-    CHAT_ID,
-    DRY_RUN,
-    TELEGRAM_MIN_INTERVAL,
-    TELEGRAM_MAX_RETRIES,
-)
-from timeutils import format_ist
+from config import config
+from database import Database
+from models import AlertState
+from tracker import AlertCandidate
 
 
-class Notifier:
+logger = logging.getLogger(__name__)
 
-    def __init__(self):
 
-        self.url = f"https://api.telegram.org/bot{BOT_TOKEN}"
+class TelegramNotifier:
+    """
+    Sends HMT stock alerts through the Telegram Bot API.
 
-        # Timestamp of the last message actually sent,
-        # used to pace requests and avoid Telegram's
-        # flood control (429) on bursts of sendPhoto calls.
-        self._last_sent = 0.0
+    Normal flow:
+        Tracker -> send_candidate() -> Telegram -> mark alert sent
 
-    ########################################################
+    The notifier only records an AlertState after Telegram confirms
+    successful delivery. This prevents failed deliveries from being
+    treated as successfully alerted watches.
+    """
 
-    def _throttle(self):
+    def __init__(
+        self,
+        db: Database,
+        *,
+        bot_token: str | None = None,
+        chat_id: str | None = None,
+        timeout: int | None = None,
+    ) -> None:
+        self.db = db
+        self.bot_token = bot_token or config.telegram.bot_token
+        self.chat_id = chat_id or config.telegram.chat_id
+        self.timeout = timeout or config.request_timeout_seconds
 
-        elapsed = time.monotonic() - self._last_sent
+        self._session = requests.Session()
+        self._lock = threading.Lock()
 
-        if elapsed < TELEGRAM_MIN_INTERVAL:
-            time.sleep(TELEGRAM_MIN_INTERVAL - elapsed)
+    @property
+    def enabled(self) -> bool:
+        """Return True when Telegram credentials are configured."""
+        return bool(self.bot_token and self.chat_id)
 
-    ########################################################
+    @property
+    def api_url(self) -> str:
+        if not self.bot_token:
+            raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured")
 
-    def _send_photo(self, watch, title, extra=""):
+        return f"https://api.telegram.org/bot{self.bot_token}"
 
-        if DRY_RUN:
-            print(
-                f"[DRY RUN] Would send: {title} -- "
-                f"{watch.name} ({watch.source}) "
-                f"[{watch.stock}] {watch.price}"
-                f"{(' ' + extra.strip()) if extra.strip() else ''}"
+    def send_candidate(self, candidate: AlertCandidate) -> dict[str, Any]:
+        """
+        Send an alert created by Tracker.
+
+        AlertCandidate currently contains the watch rather than the
+        database alert ID, so we locate the newest pending alert for
+        this watch/type before delivery.
+        """
+        alert = self._find_pending_alert(candidate)
+
+        if alert is None:
+            raise RuntimeError(
+                f"No pending alert found for watch {candidate.watch.id}"
             )
-            return True
 
-        endpoint = self.url + "/sendPhoto"
+        alert_id = int(alert["id"])
 
-        caption = f"""
-<b>{title}</b>
+        with self._lock:
+            try:
+                result = self._send_watch_message(
+                    candidate.watch,
+                    alert_type=candidate.alert_type,
+                )
 
-⌚ <b>{watch.name}</b>
+                self.db.mark_alert_sent(alert_id)
 
-💰 <b>Price</b>
-{watch.price}
+                self._record_alert_state(candidate.watch.id)
 
-📦 <b>Status</b>
-{watch.stock}
+                logger.info(
+                    "Telegram alert sent: alert_id=%s watch=%s",
+                    alert_id,
+                    candidate.watch.id,
+                )
 
-🌐 <b>Source</b>
-{watch.source}
+                return result
 
-🕒 <b>First Seen</b>
-{format_ist(watch.first_seen)}
+            except Exception as exc:
+                self.db.mark_alert_failed(
+                    alert_id,
+                    error_message=str(exc),
+                )
 
-🕒 <b>Last Seen</b>
-{format_ist(watch.last_seen)}
+                logger.exception(
+                    "Failed to send Telegram alert: alert_id=%s watch=%s",
+                    alert_id,
+                    candidate.watch.id,
+                )
 
-🟢 <b>Last Available</b>
-{format_ist(watch.last_available)}
+                raise
 
-🔗
-{watch.product_url}
-{extra}
-"""
+    def retry_failed_alerts(self, limit: int = 50) -> dict[str, int]:
+        """
+        Retry failed Telegram alerts.
 
-        payload = {
-            "chat_id": CHAT_ID,
-            "photo": watch.image_url,
-            "caption": caption,
-            "parse_mode": "HTML",
+        Returns:
+            {
+                "attempted": ...,
+                "sent": ...,
+                "failed": ...
+            }
+        """
+        return self._retry_alerts(status="failed", limit=limit)
+
+    def retry_pending_alerts(self, limit: int = 50) -> dict[str, int]:
+        """
+        Retry alerts left pending because the application stopped
+        before delivery completed.
+        """
+        return self._retry_alerts(status="pending", limit=limit)
+
+    def test_send(self, message: str | None = None) -> dict[str, Any]:
+        """
+        Send a test Telegram message without creating or modifying
+        an alert record.
+        """
+        text = message or (
+            "⌚ <b>HMT Watch Tracker</b>\n\n"
+            "Telegram notifications are working."
+        )
+
+        with self._lock:
+            return self._send_message(text)
+
+    def _retry_alerts(
+        self,
+        *,
+        status: str,
+        limit: int,
+    ) -> dict[str, int]:
+        if not self.enabled:
+            raise RuntimeError(
+                "Telegram is not configured. "
+                "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."
+            )
+
+        alerts = self.db.get_alerts(status=status, limit=limit)
+
+        attempted = 0
+        sent = 0
+        failed = 0
+
+        with self._lock:
+            for alert in alerts:
+                attempted += 1
+                alert_id = int(alert["id"])
+
+                try:
+                    message = self._format_stored_alert(alert)
+                    self._send_message(message)
+
+                    self.db.mark_alert_sent(alert_id)
+
+                    watch_id = str(alert["watch_id"])
+                    self._record_alert_state(watch_id)
+
+                    sent += 1
+
+                    logger.info(
+                        "Retried Telegram alert successfully: alert_id=%s",
+                        alert_id,
+                    )
+
+                except Exception as exc:
+                    failed += 1
+
+                    self.db.mark_alert_failed(
+                        alert_id,
+                        error_message=str(exc),
+                    )
+
+                    logger.exception(
+                        "Telegram alert retry failed: alert_id=%s",
+                        alert_id,
+                    )
+
+        return {
+            "attempted": attempted,
+            "sent": sent,
+            "failed": failed,
         }
 
-        for attempt in range(TELEGRAM_MAX_RETRIES):
+    def _find_pending_alert(
+        self,
+        candidate: AlertCandidate,
+    ) -> dict[str, Any] | None:
+        """
+        Find the alert created immediately before send_candidate().
 
-            self._throttle()
+        Tracker creates the alert before invoking the notifier callback,
+        so the newest pending alert for this watch/type is the intended
+        record.
+        """
+        alerts = self.db.get_alerts(status="pending", limit=1000)
 
-            try:
-                response = requests.post(
-                    endpoint,
-                    data=payload,
-                    timeout=30,
-                )
-            except requests.RequestException as ex:
-                print(f"[Telegram] Network error: {ex}")
-                time.sleep(2)
-                continue
-            finally:
-                self._last_sent = time.monotonic()
+        matches = [
+            alert
+            for alert in alerts
+            if str(alert["watch_id"]) == candidate.watch.id
+            and str(alert["alert_type"]) == candidate.alert_type
+        ]
 
-            if response.status_code == 200:
-                return True
+        if not matches:
+            return None
 
-            #
-            # Rate limited -- Telegram tells us how
-            # long to wait via retry_after.
-            #
-            if response.status_code == 429:
-                retry_after = 3
-                try:
-                    retry_after = response.json() \
-                        .get("parameters", {}) \
-                        .get("retry_after", 3)
-                except Exception:
-                    pass
-
-                print(
-                    f"[Telegram] Rate limited. "
-                    f"Waiting {retry_after}s "
-                    f"(attempt {attempt + 1}/"
-                    f"{TELEGRAM_MAX_RETRIES})"
-                )
-                time.sleep(retry_after + 0.5)
-                continue
-
-            #
-            # Bad photo URL is common (dead image link) --
-            # retry once as text-only rather than
-            # dropping the alert entirely.
-            #
-            if response.status_code == 400 and attempt == 0:
-                print(
-                    "[Telegram] sendPhoto failed "
-                    f"({response.text[:200]}), "
-                    "retrying as text message."
-                )
-                self._send_text(caption)
-                return True
-
-            print(
-                f"[Telegram] Failed "
-                f"({response.status_code}): "
-                f"{response.text[:300]}"
-            )
-            time.sleep(2)
-
-        print(
-            f"[Telegram] Giving up on notification "
-            f"for: {watch.name}"
+        return max(
+            matches,
+            key=lambda alert: int(alert["id"]),
         )
-        return False
 
-    ########################################################
+    def _send_watch_message(
+        self,
+        watch: Any,
+        *,
+        alert_type: str,
+    ) -> dict[str, Any]:
+        if not self.enabled:
+            raise RuntimeError(
+                "Telegram is not configured. "
+                "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."
+            )
 
-    def _send_text(self, text):
+        message = self._format_watch(watch, alert_type=alert_type)
+        return self._send_message(message)
 
-        endpoint = self.url + "/sendMessage"
+    def _send_message(self, text: str) -> dict[str, Any]:
+        if not self.enabled:
+            raise RuntimeError(
+                "Telegram is not configured. "
+                "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."
+            )
 
-        self._throttle()
+        response = self._session.post(
+            f"{self.api_url}/sendMessage",
+            data={
+                "chat_id": self.chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": False,
+            },
+            timeout=self.timeout,
+        )
+
+        response.raise_for_status()
 
         try:
-            response = requests.post(
-                endpoint,
-                data={
-                    "chat_id": CHAT_ID,
-                    "text": text,
-                    "parse_mode": "HTML",
-                },
-                timeout=30,
+            payload = response.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                "Telegram returned a non-JSON response"
+            ) from exc
+
+        if not payload.get("ok"):
+            description = payload.get(
+                "description",
+                "Telegram API returned an unsuccessful response",
             )
-            if response.status_code != 200:
-                print(response.text)
-        except requests.RequestException as ex:
-            print(f"[Telegram] Network error: {ex}")
-        finally:
-            self._last_sent = time.monotonic()
+            raise RuntimeError(description)
 
-    ########################################################
+        return payload
 
-    def new_watch(self, watch):
-        self._send_photo(watch, "🟢 NEW WATCH")
+    def _format_watch(
+        self,
+        watch: Any,
+        *,
+        alert_type: str,
+    ) -> str:
+        name = html.escape(str(watch.name or "Unknown watch"))
+        source = html.escape(self._source_label(watch.source))
 
-    ########################################################
+        lines = [
+            "⌚ <b>New HMT Watch Found</b>",
+            "",
+            f"<b>{name}</b>",
+            f"Source: {source}",
+        ]
 
-    def removed_watch(self, watch):
-        self._send_photo(watch, "❌ REMOVED")
+        if getattr(watch, "model_number", None):
+            model = html.escape(str(watch.model_number))
+            lines.append(f"Model: {model}")
 
-    ########################################################
+        if getattr(watch, "sku", None):
+            sku = html.escape(str(watch.sku))
+            lines.append(f"SKU: {sku}")
 
-    def sold_out(self, watch):
-        self._send_photo(watch, "🔴 SOLD OUT")
+        price = self._format_price(getattr(watch, "price", None))
+        if price:
+            lines.append(f"Price: {price}")
 
-    ########################################################
+        stock = self._format_stock(watch)
 
-    def back_in_stock(self, watch):
-        self._send_photo(watch, "🟢 BACK IN STOCK")
+        if stock:
+            lines.append(f"Stock: <b>{html.escape(stock)}</b>")
 
-    ########################################################
+        if getattr(watch, "product_url", None):
+            url = html.escape(str(watch.product_url), quote=True)
+            lines.extend(
+                [
+                    "",
+                    f'🛒 <a href="{url}">View watch</a>',
+                ]
+            )
 
-    def price_changed(self, watch, old_price, new_price):
-        self._send_photo(
-            watch,
-            "💰 PRICE CHANGED",
-            f"""
-Old Price
-{old_price}
+        return "\n".join(lines)
 
-New Price
-{new_price}
-"""
+    def _format_stored_alert(self, alert: dict[str, Any]) -> str:
+        """
+        Format an alert using only fields persisted in SQLite.
+
+        Retry records intentionally do not depend on the live catalogue,
+        because the catalogue may have changed since the original alert.
+        """
+        name = html.escape(
+            str(alert.get("watch_name") or "Unknown watch")
         )
 
-    ########################################################
+        source = html.escape(
+            self._source_label(str(alert.get("source") or "unknown"))
+        )
 
-    def send_result(self, result):
+        lines = [
+            "⌚ <b>HMT Watch Alert</b>",
+            "",
+            f"<b>{name}</b>",
+            f"Source: {source}",
+        ]
 
-        for watch in result.new:
-            self.new_watch(watch)
+        stock_count = alert.get("stock_count")
 
-        for watch in result.removed:
-            self.removed_watch(watch)
+        if stock_count is not None:
+            try:
+                stock_text = f"{int(stock_count)} available"
+            except (TypeError, ValueError):
+                stock_text = str(stock_count)
+        else:
+            stock_text = "In stock"
 
-        for watch in result.sold_out:
-            self.sold_out(watch)
+        lines.append(f"Stock: <b>{html.escape(stock_text)}</b>")
 
-        for watch in result.back_in_stock:
-            self.back_in_stock(watch)
+        price = self._format_price(alert.get("price"))
+        if price:
+            lines.append(f"Price: {price}")
 
-        for item in result.price_changed:
-            self.price_changed(
-                item["watch"],
-                item["old_price"],
-                item["new_price"]
+        product_url = alert.get("product_url")
+
+        if product_url:
+            url = html.escape(str(product_url), quote=True)
+            lines.extend(
+                [
+                    "",
+                    f'🛒 <a href="{url}">View watch</a>',
+                ]
             )
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_stock(watch: Any) -> str:
+        if not getattr(watch, "in_stock", False):
+            return "Out of stock"
+
+        stock_count = getattr(watch, "stock_count", None)
+
+        if stock_count is not None:
+            try:
+                return f"{int(stock_count)} available"
+            except (TypeError, ValueError):
+                pass
+
+        return "In stock"
+
+    @staticmethod
+    def _format_price(price: Any) -> str | None:
+        if price is None:
+            return None
+
+        try:
+            value = float(price)
+        except (TypeError, ValueError):
+            return str(price)
+
+        if value.is_integer():
+            return f"₹{int(value):,}"
+
+        return f"₹{value:,.2f}"
+
+    @staticmethod
+    def _source_label(source: str) -> str:
+        labels = {
+            "hmt.in": "HMT Watches",
+            "hmt.store": "HMT Watches Store",
+        }
+
+        return labels.get(source, source)
+
+    def _record_alert_state(self, watch_id: str) -> None:
+        """
+        Record an alert only after Telegram confirms success.
+        """
+        state = self.db.get_alert_state(watch_id)
+
+        if state is None:
+            state = AlertState(watch_id=watch_id)
+
+        state.record_alert()
+        self.db.save_alert_state(state)

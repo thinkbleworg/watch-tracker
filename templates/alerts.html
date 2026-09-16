@@ -1,0 +1,1250 @@
+{% extends "base.html" %}
+
+{% block title %}Alerts{% endblock %}
+{% block page_title %}Alerts{% endblock %}
+{% block page_subtitle %}
+    Telegram notification history and delivery status.
+{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+    <div>
+        <h1>Alerts</h1>
+        <p>
+            Review notification activity, retry failed deliveries,
+            and test your Telegram connection.
+        </p>
+    </div>
+
+    <div class="page-header-actions">
+        <button
+            id="test-telegram-button"
+            class="button button-secondary"
+            type="button"
+            onclick="testTelegram()"
+        >
+            Test Telegram
+        </button>
+
+        <button
+            id="refresh-alerts-button"
+            class="button button-primary"
+            type="button"
+            onclick="loadAlerts()"
+        >
+            Refresh
+        </button>
+    </div>
+</div>
+
+
+<!-- Summary -->
+<section class="stats-grid">
+
+    <div class="stat-card">
+        <div class="stat-card-label">Pending</div>
+        <div
+            id="pending-count"
+            class="stat-card-value"
+        >
+            —
+        </div>
+        <div class="stat-card-meta">
+            Waiting for delivery
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-card-label">Sent</div>
+        <div
+            id="sent-count"
+            class="stat-card-value"
+        >
+            —
+        </div>
+        <div class="stat-card-meta">
+            Successfully delivered
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-card-label">Failed</div>
+        <div
+            id="failed-count"
+            class="stat-card-value"
+        >
+            —
+        </div>
+        <div class="stat-card-meta">
+            Available for retry
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-card-label">Telegram</div>
+        <div
+            id="telegram-status"
+            class="stat-card-value"
+        >
+            —
+        </div>
+        <div class="stat-card-meta">
+            Configuration status
+        </div>
+    </div>
+
+</section>
+
+
+<!-- Retry controls -->
+<section class="panel">
+
+    <div class="panel-header">
+        <div>
+            <h2>Delivery controls</h2>
+            <p>
+                Retry notifications that could not be delivered.
+            </p>
+        </div>
+    </div>
+
+    <div
+        class="settings-grid"
+        style="
+            display:grid;
+            grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+            gap:16px;
+        "
+    >
+
+        <div
+            style="
+                border:1px solid var(--border-color,#e5e7eb);
+                border-radius:12px;
+                padding:18px;
+            "
+        >
+            <div
+                style="
+                    font-weight:700;
+                    margin-bottom:6px;
+                "
+            >
+                Failed alerts
+            </div>
+
+            <div
+                style="
+                    color:var(--text-muted,#6b7280);
+                    font-size:14px;
+                    line-height:1.5;
+                    margin-bottom:14px;
+                "
+            >
+                Retry alerts where Telegram previously returned
+                an error.
+            </div>
+
+            <button
+                id="retry-failed-button"
+                class="button button-secondary"
+                type="button"
+                onclick="retryAlerts('failed')"
+            >
+                Retry Failed
+            </button>
+        </div>
+
+
+        <div
+            style="
+                border:1px solid var(--border-color,#e5e7eb);
+                border-radius:12px;
+                padding:18px;
+            "
+        >
+            <div
+                style="
+                    font-weight:700;
+                    margin-bottom:6px;
+                "
+            >
+                Pending alerts
+            </div>
+
+            <div
+                style="
+                    color:var(--text-muted,#6b7280);
+                    font-size:14px;
+                    line-height:1.5;
+                    margin-bottom:14px;
+                "
+            >
+                Retry alerts that were created but were still
+                waiting when the application stopped.
+            </div>
+
+            <button
+                id="retry-pending-button"
+                class="button button-secondary"
+                type="button"
+                onclick="retryAlerts('pending')"
+            >
+                Retry Pending
+            </button>
+        </div>
+
+    </div>
+
+</section>
+
+
+<!-- Filters -->
+<section class="panel">
+
+    <div class="panel-header">
+        <div>
+            <h2>Alert history</h2>
+            <p>
+                Latest notification records from the tracker.
+            </p>
+        </div>
+    </div>
+
+    <div
+        style="
+            display:flex;
+            flex-wrap:wrap;
+            gap:12px;
+            align-items:end;
+        "
+    >
+
+        <div
+            style="
+                min-width:220px;
+                flex:1;
+            "
+        >
+            <label
+                for="status-filter"
+                style="
+                    display:block;
+                    font-size:13px;
+                    font-weight:600;
+                    margin-bottom:6px;
+                "
+            >
+                Status
+            </label>
+
+            <select
+                id="status-filter"
+                class="form-select"
+                onchange="loadAlerts()"
+            >
+                <option value="">All alerts</option>
+                <option value="pending">Pending</option>
+                <option value="sent">Sent</option>
+                <option value="failed">Failed</option>
+            </select>
+        </div>
+
+
+        <div
+            style="
+                min-width:180px;
+            "
+        >
+            <label
+                for="alert-limit"
+                style="
+                    display:block;
+                    font-size:13px;
+                    font-weight:600;
+                    margin-bottom:6px;
+                "
+            >
+                Show
+            </label>
+
+            <select
+                id="alert-limit"
+                class="form-select"
+                onchange="loadAlerts()"
+            >
+                <option value="25">25 alerts</option>
+                <option value="50">50 alerts</option>
+                <option value="100" selected>100 alerts</option>
+                <option value="250">250 alerts</option>
+                <option value="500">500 alerts</option>
+            </select>
+        </div>
+
+    </div>
+
+</section>
+
+
+<!-- Alert list -->
+<section class="panel">
+
+    <div
+        id="alerts-list"
+        class="alert-list"
+    >
+        <div class="loading-state">
+            Loading alerts...
+        </div>
+    </div>
+
+</section>
+
+
+<!-- Information -->
+<section class="info-panel">
+
+    <div class="info-panel-icon">
+        ℹ
+    </div>
+
+    <div>
+        <h3>How notification delivery works</h3>
+
+        <p>
+            The tracker creates an alert record before attempting
+            Telegram delivery. A successful Telegram response changes
+            the record to <strong>sent</strong>.
+        </p>
+
+        <p>
+            If delivery fails, the alert remains available as
+            <strong>failed</strong> so it can be retried later.
+            Pending alerts can also be retried after an interrupted
+            application run.
+        </p>
+
+        <p>
+            The first catalogue-seeding run is silent, so existing
+            watches do not generate a Telegram flood.
+        </p>
+    </div>
+
+</section>
+
+
+<script>
+
+(function () {
+
+    function safeText(value) {
+        if (value === null || value === undefined) {
+            return "";
+        }
+
+        return String(value);
+    }
+
+
+    function escape(value) {
+        if (typeof escapeHtml === "function") {
+            return escapeHtml(safeText(value));
+        }
+
+        return safeText(value)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+
+    function formatDate(value) {
+        if (!value) {
+            return "—";
+        }
+
+        try {
+            const date = new Date(value);
+
+            if (Number.isNaN(date.getTime())) {
+                return escape(value);
+            }
+
+            return date.toLocaleString();
+        } catch (error) {
+            return escape(value);
+        }
+    }
+
+
+    function formatPrice(value) {
+        if (
+            value === null ||
+            value === undefined ||
+            value === ""
+        ) {
+            return "—";
+        }
+
+        if (typeof formatCurrency === "function") {
+            return formatCurrency(value);
+        }
+
+        const number = Number(value);
+
+        if (Number.isNaN(number)) {
+            return escape(value);
+        }
+
+        return "₹" + number.toLocaleString("en-IN", {
+            maximumFractionDigits: 2
+        });
+    }
+
+
+    function formatStock(stockCount, status) {
+
+        if (
+            stockCount !== null &&
+            stockCount !== undefined &&
+            stockCount !== ""
+        ) {
+            const count = Number(stockCount);
+
+            if (!Number.isNaN(count)) {
+                return count + " available";
+            }
+        }
+
+        if (status === "sent" || status === "pending" || status === "failed") {
+            return "Stock status recorded";
+        }
+
+        return "—";
+    }
+
+
+    function alertTypeLabel(type) {
+
+        const labels = {
+            "new": "New watch",
+            "back_in_stock": "Back in stock",
+            "out_of_stock": "Out of stock",
+            "price_change": "Price change"
+        };
+
+        return labels[type] || type || "Alert";
+    }
+
+
+    function statusBadge(status) {
+
+        const normalized = safeText(status).toLowerCase();
+
+        let label = normalized || "unknown";
+
+        if (normalized === "sent") {
+            label = "Sent";
+        } else if (normalized === "pending") {
+            label = "Pending";
+        } else if (normalized === "failed") {
+            label = "Failed";
+        }
+
+        return `
+            <span class="badge badge-${escape(normalized)}">
+                ${escape(label)}
+            </span>
+        `;
+    }
+
+
+    function sourceLabel(source) {
+
+        const labels = {
+            "hmt.in": "HMT Watches",
+            "hmt.store": "HMT Watches Store"
+        };
+
+        return labels[source] || source || "Unknown source";
+    }
+
+
+    function renderAlert(alert) {
+
+        const status = safeText(alert.status).toLowerCase();
+        const alertType = alertTypeLabel(alert.alert_type);
+
+        const name = alert.name || "Unknown watch";
+
+        const source = sourceLabel(alert.source);
+
+        const stock = formatStock(
+            alert.stock_count,
+            status
+        );
+
+        const price = formatPrice(alert.price);
+
+        const productUrl = alert.product_url
+            ? safeText(alert.product_url)
+            : "";
+
+        let actionHtml = "";
+
+        if (productUrl) {
+            actionHtml = `
+                <a
+                    href="${escape(productUrl)}"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="button button-secondary button-small"
+                >
+                    View Watch
+                </a>
+            `;
+        }
+
+
+        let errorHtml = "";
+
+        if (alert.error) {
+            errorHtml = `
+                <div
+                    style="
+                        margin-top:10px;
+                        padding:10px 12px;
+                        border-radius:8px;
+                        background:rgba(220,38,38,.06);
+                        color:var(--text-muted,#6b7280);
+                        font-size:13px;
+                        line-height:1.45;
+                    "
+                >
+                    <strong>Delivery error:</strong>
+                    ${escape(alert.error)}
+                </div>
+            `;
+        }
+
+
+        let telegramHtml = "";
+
+        if (alert.telegram_message_id) {
+            telegramHtml = `
+                <span>
+                    Telegram message #${escape(
+                        alert.telegram_message_id
+                    )}
+                </span>
+            `;
+        }
+
+
+        return `
+            <article
+                class="alert-item"
+                style="
+                    padding:18px;
+                    border-bottom:1px solid var(--border-color,#e5e7eb);
+                "
+            >
+
+                <div
+                    style="
+                        display:flex;
+                        justify-content:space-between;
+                        align-items:flex-start;
+                        gap:16px;
+                        flex-wrap:wrap;
+                    "
+                >
+
+                    <div style="min-width:0;flex:1;">
+
+                        <div
+                            style="
+                                display:flex;
+                                gap:8px;
+                                align-items:center;
+                                flex-wrap:wrap;
+                                margin-bottom:7px;
+                            "
+                        >
+                            ${statusBadge(status)}
+
+                            <span
+                                class="badge"
+                                style="
+                                    text-transform:none;
+                                "
+                            >
+                                ${escape(alertType)}
+                            </span>
+                        </div>
+
+
+                        <h3
+                            style="
+                                margin:0 0 6px;
+                                font-size:17px;
+                            "
+                        >
+                            ${escape(name)}
+                        </h3>
+
+
+                        <div
+                            style="
+                                color:var(--text-muted,#6b7280);
+                                font-size:13px;
+                                line-height:1.6;
+                            "
+                        >
+                            <div>
+                                <strong>Source:</strong>
+                                ${escape(source)}
+                            </div>
+
+                            <div>
+                                <strong>Stock:</strong>
+                                ${escape(stock)}
+                            </div>
+
+                            <div>
+                                <strong>Price:</strong>
+                                ${escape(price)}
+                            </div>
+
+                            <div>
+                                <strong>Created:</strong>
+                                ${formatDate(alert.created_at)}
+                            </div>
+
+                            ${
+                                alert.sent_at
+                                ? `
+                                    <div>
+                                        <strong>Sent:</strong>
+                                        ${formatDate(alert.sent_at)}
+                                    </div>
+                                `
+                                : ""
+                            }
+
+                            ${
+                                telegramHtml
+                                ? `
+                                    <div>
+                                        ${telegramHtml}
+                                    </div>
+                                `
+                                : ""
+                            }
+                        </div>
+
+                        ${errorHtml}
+
+                    </div>
+
+
+                    <div
+                        style="
+                            display:flex;
+                            gap:8px;
+                            align-items:center;
+                            flex-wrap:wrap;
+                        "
+                    >
+                        ${actionHtml}
+                    </div>
+
+                </div>
+
+            </article>
+        `;
+    }
+
+
+    function renderAlerts(alerts) {
+
+        const container = document.getElementById(
+            "alerts-list"
+        );
+
+        if (!container) {
+            return;
+        }
+
+
+        if (!alerts || alerts.length === 0) {
+
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div
+                        style="
+                            font-size:32px;
+                            margin-bottom:10px;
+                        "
+                    >
+                        🔔
+                    </div>
+
+                    <h3>No alerts found</h3>
+
+                    <p>
+                        There is no notification activity matching
+                        the current filter.
+                    </p>
+                </div>
+            `;
+
+            return;
+        }
+
+
+        container.innerHTML = alerts
+            .map(renderAlert)
+            .join("");
+    }
+
+
+    function setLoading() {
+
+        const container = document.getElementById(
+            "alerts-list"
+        );
+
+        if (!container) {
+            return;
+        }
+
+        container.innerHTML = `
+            <div class="loading-state">
+                Loading alerts...
+            </div>
+        `;
+    }
+
+
+    function setError(message) {
+
+        const container = document.getElementById(
+            "alerts-list"
+        );
+
+        if (!container) {
+            return;
+        }
+
+        container.innerHTML = `
+            <div class="error-state">
+                <strong>Could not load alerts.</strong>
+
+                <div style="margin-top:6px;">
+                    ${escape(message)}
+                </div>
+
+                <button
+                    class="button button-secondary"
+                    type="button"
+                    style="margin-top:14px;"
+                    onclick="loadAlerts()"
+                >
+                    Try Again
+                </button>
+            </div>
+        `;
+    }
+
+
+    async function fetchAlerts() {
+
+        const statusElement = document.getElementById(
+            "status-filter"
+        );
+
+        const limitElement = document.getElementById(
+            "alert-limit"
+        );
+
+        const status = statusElement
+            ? statusElement.value
+            : "";
+
+        const limit = limitElement
+            ? limitElement.value
+            : "100";
+
+
+        const params = new URLSearchParams();
+
+        if (status) {
+            params.set("status", status);
+        }
+
+        params.set("limit", limit);
+
+
+        const url = "/api/alerts?" + params.toString();
+
+
+        if (typeof apiGet === "function") {
+            return await apiGet(url);
+        }
+
+
+        const response = await fetch(url);
+
+        if (!response.ok) {
+            throw new Error(
+                "Request failed with HTTP " + response.status
+            );
+        }
+
+        return await response.json();
+    }
+
+
+    async function loadAlertSummary() {
+
+        try {
+
+            const response = await fetch(
+                "/api/alerts?limit=1000"
+            );
+
+            if (!response.ok) {
+                throw new Error(
+                    "Could not load alert summary."
+                );
+            }
+
+            const data = await response.json();
+
+            const alerts = data.alerts || [];
+
+
+            const counts = {
+                pending: 0,
+                sent: 0,
+                failed: 0
+            };
+
+
+            alerts.forEach(function (alert) {
+
+                const status = safeText(
+                    alert.status
+                ).toLowerCase();
+
+                if (
+                    Object.prototype.hasOwnProperty.call(
+                        counts,
+                        status
+                    )
+                ) {
+                    counts[status] += 1;
+                }
+            });
+
+
+            const pendingElement = document.getElementById(
+                "pending-count"
+            );
+
+            const sentElement = document.getElementById(
+                "sent-count"
+            );
+
+            const failedElement = document.getElementById(
+                "failed-count"
+            );
+
+
+            if (pendingElement) {
+                pendingElement.textContent =
+                    counts.pending;
+            }
+
+            if (sentElement) {
+                sentElement.textContent =
+                    counts.sent;
+            }
+
+            if (failedElement) {
+                failedElement.textContent =
+                    counts.failed;
+            }
+
+        } catch (error) {
+
+            console.error(
+                "Could not load alert summary:",
+                error
+            );
+
+        }
+    }
+
+
+    async function loadTelegramStatus() {
+
+        const element = document.getElementById(
+            "telegram-status"
+        );
+
+        if (!element) {
+            return;
+        }
+
+
+        try {
+
+            const response = await fetch(
+                "/api/status"
+            );
+
+            if (!response.ok) {
+                throw new Error(
+                    "Status request failed."
+                );
+            }
+
+            const data = await response.json();
+
+            const enabled =
+                data.telegram &&
+                data.telegram.enabled === true;
+
+
+            element.textContent =
+                enabled
+                    ? "Configured"
+                    : "Not configured";
+
+        } catch (error) {
+
+            element.textContent = "Unavailable";
+
+            console.error(
+                "Could not load Telegram status:",
+                error
+            );
+        }
+    }
+
+
+    window.loadAlerts = async function () {
+
+        setLoading();
+
+
+        try {
+
+            const data = await fetchAlerts();
+
+            renderAlerts(
+                data.alerts || []
+            );
+
+        } catch (error) {
+
+            console.error(
+                "Could not load alerts:",
+                error
+            );
+
+            setError(
+                error.message ||
+                "Unknown error"
+            );
+        }
+
+
+        await Promise.all([
+            loadAlertSummary(),
+            loadTelegramStatus()
+        ]);
+    };
+
+
+    window.retryAlerts = async function (
+        status
+    ) {
+
+        const buttonId =
+            status === "failed"
+                ? "retry-failed-button"
+                : "retry-pending-button";
+
+        const button = document.getElementById(
+            buttonId
+        );
+
+
+        const originalText = button
+            ? button.textContent
+            : "";
+
+
+        if (button) {
+            button.disabled = true;
+            button.textContent = "Retrying...";
+        }
+
+
+        try {
+
+            const url =
+                "/api/alerts/retry?status=" +
+                encodeURIComponent(status) +
+                "&limit=50";
+
+
+            let response;
+
+
+            if (typeof apiPost === "function") {
+                response = await apiPost(url);
+            } else {
+
+                const fetchResponse = await fetch(
+                    url,
+                    {
+                        method: "POST"
+                    }
+                );
+
+
+                if (!fetchResponse.ok) {
+
+                    let message =
+                        "Retry request failed.";
+
+                    try {
+                        const payload =
+                            await fetchResponse.json();
+
+                        message =
+                            payload.detail ||
+                            payload.message ||
+                            message;
+                    } catch (error) {
+                        // Keep fallback message.
+                    }
+
+                    throw new Error(message);
+                }
+
+
+                response =
+                    await fetchResponse.json();
+            }
+
+
+            const attempted =
+                response.attempted || 0;
+
+            const sent =
+                response.sent || 0;
+
+            const failed =
+                response.failed || 0;
+
+
+            if (typeof showNotification === "function") {
+
+                showNotification(
+                    `Retry complete: ${attempted} attempted, ${sent} sent, ${failed} failed.`,
+                    failed > 0
+                        ? "error"
+                        : "success"
+                );
+
+            } else {
+
+                alert(
+                    `Retry complete: ${attempted} attempted, ${sent} sent, ${failed} failed.`
+                );
+            }
+
+
+            await loadAlerts();
+
+        } catch (error) {
+
+            console.error(
+                "Alert retry failed:",
+                error
+            );
+
+
+            if (typeof showNotification === "function") {
+
+                showNotification(
+                    error.message ||
+                    "Alert retry failed.",
+                    "error"
+                );
+
+            } else {
+
+                alert(
+                    error.message ||
+                    "Alert retry failed."
+                );
+            }
+
+        } finally {
+
+            if (button) {
+                button.disabled = false;
+                button.textContent = originalText;
+            }
+        }
+    };
+
+
+    window.testTelegram = async function () {
+
+        const button = document.getElementById(
+            "test-telegram-button"
+        );
+
+
+        const originalText = button
+            ? button.textContent
+            : "";
+
+
+        if (button) {
+            button.disabled = true;
+            button.textContent = "Testing...";
+        }
+
+
+        try {
+
+            let response;
+
+
+            if (typeof apiPost === "function") {
+                response = await apiPost(
+                    "/api/telegram/test"
+                );
+            } else {
+
+                const fetchResponse = await fetch(
+                    "/api/telegram/test",
+                    {
+                        method: "POST"
+                    }
+                );
+
+
+                if (!fetchResponse.ok) {
+
+                    let message =
+                        "Telegram test failed.";
+
+                    try {
+
+                        const payload =
+                            await fetchResponse.json();
+
+                        message =
+                            payload.detail ||
+                            payload.message ||
+                            message;
+
+                    } catch (error) {
+                        // Keep fallback message.
+                    }
+
+                    throw new Error(message);
+                }
+
+
+                response =
+                    await fetchResponse.json();
+            }
+
+
+            if (
+                response &&
+                response.success === false
+            ) {
+                throw new Error(
+                    response.message ||
+                    "Telegram test failed."
+                );
+            }
+
+
+            if (typeof showNotification === "function") {
+
+                showNotification(
+                    "Telegram test message sent successfully.",
+                    "success"
+                );
+
+            } else {
+
+                alert(
+                    "Telegram test message sent successfully."
+                );
+            }
+
+
+            await loadTelegramStatus();
+
+        } catch (error) {
+
+            console.error(
+                "Telegram test failed:",
+                error
+            );
+
+
+            if (typeof showNotification === "function") {
+
+                showNotification(
+                    error.message ||
+                    "Telegram test failed.",
+                    "error"
+                );
+
+            } else {
+
+                alert(
+                    error.message ||
+                    "Telegram test failed."
+                );
+            }
+
+        } finally {
+
+            if (button) {
+                button.disabled = false;
+                button.textContent = originalText;
+            }
+        }
+    };
+
+
+    document.addEventListener(
+        "DOMContentLoaded",
+        function () {
+            loadAlerts();
+        }
+    );
+
+})();
+
+</script>
+
+{% endblock %}

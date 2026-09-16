@@ -1,0 +1,982 @@
+{% extends "base.html" %}
+
+{% block title %}Catalogue · HMT Tracker{% endblock %}
+
+{% block nav_catalogue %}active{% endblock %}
+
+{% block page_header %}
+<div>
+    <h1>Catalogue</h1>
+    <p>
+        Browse HMT watches discovered across both stores.
+    </p>
+</div>
+{% endblock %}
+
+
+{% block content %}
+
+<div class="page-intro">
+    <div>
+        <h2>Watch Catalogue</h2>
+        <p>
+            Search and filter the watches currently known to the tracker.
+        </p>
+    </div>
+
+    <div id="catalogue-count" class="badge badge-neutral">
+        Loading...
+    </div>
+</div>
+
+
+<!-- Filters -->
+<section class="panel">
+
+    <div class="panel-header">
+        <div>
+            <h2>Filters</h2>
+            <p>
+                Narrow the catalogue by availability, source, or search.
+            </p>
+        </div>
+    </div>
+
+    <div class="filter-grid">
+
+        <div class="form-group">
+            <label for="catalogue-search">
+                Search
+            </label>
+
+            <input
+                id="catalogue-search"
+                class="form-input"
+                type="search"
+                placeholder="Name, model number, or SKU..."
+                autocomplete="off"
+            >
+        </div>
+
+
+        <div class="form-group">
+            <label for="catalogue-source">
+                Source
+            </label>
+
+            <select
+                id="catalogue-source"
+                class="form-select"
+            >
+                <option value="">All sources</option>
+                <option value="hmt.in">
+                    HMT Watches
+                </option>
+                <option value="hmt.store">
+                    HMT Watches Store
+                </option>
+            </select>
+        </div>
+
+
+        <div class="form-group">
+            <label for="catalogue-stock">
+                Availability
+            </label>
+
+            <select
+                id="catalogue-stock"
+                class="form-select"
+            >
+                <option value="">All watches</option>
+                <option value="true">In stock</option>
+                <option value="false">Out of stock</option>
+            </select>
+        </div>
+
+
+        <div class="form-group filter-actions">
+            <button
+                id="catalogue-search-button"
+                class="button button-primary"
+                type="button"
+            >
+                Search
+            </button>
+
+            <button
+                id="catalogue-reset-button"
+                class="button button-secondary"
+                type="button"
+            >
+                Reset
+            </button>
+        </div>
+
+    </div>
+
+</section>
+
+
+<!-- Catalogue -->
+<section class="panel">
+
+    <div class="panel-header">
+
+        <div>
+            <h2>Watches</h2>
+
+            <p id="catalogue-summary">
+                Loading catalogue...
+            </p>
+        </div>
+
+        <button
+            id="catalogue-refresh-button"
+            class="button button-secondary"
+            type="button"
+        >
+            Refresh
+        </button>
+
+    </div>
+
+
+    <div
+        id="catalogue-list"
+        class="watch-list"
+    >
+        <div class="loading-state">
+            Loading catalogue...
+        </div>
+    </div>
+
+
+    <!-- Pagination -->
+
+    <div
+        id="catalogue-pagination"
+        class="pagination"
+    ></div>
+
+</section>
+
+{% endblock %}
+
+
+{% block scripts %}
+
+<script>
+
+"use strict";
+
+
+const catalogueState = {
+    search: "",
+    source: "",
+    stock: "",
+    limit: 24,
+    offset: 0,
+    count: 0
+};
+
+
+/* ============================================================
+   Startup
+   ============================================================ */
+
+document.addEventListener(
+    "DOMContentLoaded",
+    () => {
+
+        restoreFilters();
+        bindCatalogueEvents();
+        loadCatalogue();
+
+    }
+);
+
+
+/* ============================================================
+   Events
+   ============================================================ */
+
+function bindCatalogueEvents() {
+
+    const searchInput =
+        document.getElementById(
+            "catalogue-search"
+        );
+
+    const sourceSelect =
+        document.getElementById(
+            "catalogue-source"
+        );
+
+    const stockSelect =
+        document.getElementById(
+            "catalogue-stock"
+        );
+
+    const searchButton =
+        document.getElementById(
+            "catalogue-search-button"
+        );
+
+    const resetButton =
+        document.getElementById(
+            "catalogue-reset-button"
+        );
+
+    const refreshButton =
+        document.getElementById(
+            "catalogue-refresh-button"
+        );
+
+
+    searchButton.addEventListener(
+        "click",
+        applyFilters
+    );
+
+
+    resetButton.addEventListener(
+        "click",
+        resetFilters
+    );
+
+
+    refreshButton.addEventListener(
+        "click",
+        () => loadCatalogue()
+    );
+
+
+    searchInput.addEventListener(
+        "keydown",
+        event => {
+
+            if (event.key === "Enter") {
+                applyFilters();
+            }
+
+        }
+    );
+
+
+    sourceSelect.addEventListener(
+        "change",
+        applyFilters
+    );
+
+
+    stockSelect.addEventListener(
+        "change",
+        applyFilters
+    );
+
+}
+
+
+/* ============================================================
+   Filters
+   ============================================================ */
+
+function applyFilters() {
+
+    const searchInput =
+        document.getElementById(
+            "catalogue-search"
+        );
+
+    const sourceSelect =
+        document.getElementById(
+            "catalogue-source"
+        );
+
+    const stockSelect =
+        document.getElementById(
+            "catalogue-stock"
+        );
+
+
+    catalogueState.search =
+        searchInput.value.trim();
+
+    catalogueState.source =
+        sourceSelect.value;
+
+    catalogueState.stock =
+        stockSelect.value;
+
+    catalogueState.offset = 0;
+
+    saveFilters();
+
+    loadCatalogue();
+
+}
+
+
+function resetFilters() {
+
+    document.getElementById(
+        "catalogue-search"
+    ).value = "";
+
+    document.getElementById(
+        "catalogue-source"
+    ).value = "";
+
+    document.getElementById(
+        "catalogue-stock"
+    ).value = "";
+
+
+    catalogueState.search = "";
+    catalogueState.source = "";
+    catalogueState.stock = "";
+    catalogueState.offset = 0;
+
+
+    saveFilters();
+    loadCatalogue();
+
+}
+
+
+function saveFilters() {
+
+    const params =
+        new URLSearchParams();
+
+
+    if (catalogueState.search) {
+        params.set(
+            "search",
+            catalogueState.search
+        );
+    }
+
+
+    if (catalogueState.source) {
+        params.set(
+            "source",
+            catalogueState.source
+        );
+    }
+
+
+    if (catalogueState.stock) {
+        params.set(
+            "stock",
+            catalogueState.stock
+        );
+    }
+
+
+    const query =
+        params.toString();
+
+
+    const url =
+        query
+            ? `/catalogue?${query}`
+            : "/catalogue";
+
+
+    window.history.replaceState(
+        {},
+        "",
+        url
+    );
+
+}
+
+
+/* ============================================================
+   Restore URL filters
+   ============================================================ */
+
+function restoreFilters() {
+
+    const params =
+        new URLSearchParams(
+            window.location.search
+        );
+
+
+    catalogueState.search =
+        params.get("search") || "";
+
+    catalogueState.source =
+        params.get("source") || "";
+
+    catalogueState.stock =
+        params.get("stock") || "";
+
+
+    document.getElementById(
+        "catalogue-search"
+    ).value =
+        catalogueState.search;
+
+
+    document.getElementById(
+        "catalogue-source"
+    ).value =
+        catalogueState.source;
+
+
+    document.getElementById(
+        "catalogue-stock"
+    ).value =
+        catalogueState.stock;
+
+}
+
+
+/* ============================================================
+   Load catalogue
+   ============================================================ */
+
+async function loadCatalogue() {
+
+    const container =
+        document.getElementById(
+            "catalogue-list"
+        );
+
+    const summary =
+        document.getElementById(
+            "catalogue-summary"
+        );
+
+    const countBadge =
+        document.getElementById(
+            "catalogue-count"
+        );
+
+
+    container.innerHTML =
+        '<div class="loading-state">' +
+        'Loading catalogue...' +
+        '</div>';
+
+
+    try {
+
+        const params =
+            new URLSearchParams();
+
+
+        if (catalogueState.source) {
+
+            params.set(
+                "source",
+                catalogueState.source
+            );
+
+        }
+
+
+        if (catalogueState.stock) {
+
+            params.set(
+                "in_stock",
+                catalogueState.stock
+            );
+
+        }
+
+
+        if (catalogueState.search) {
+
+            params.set(
+                "search",
+                catalogueState.search
+            );
+
+        }
+
+
+        params.set(
+            "limit",
+            String(catalogueState.limit)
+        );
+
+
+        params.set(
+            "offset",
+            String(catalogueState.offset)
+        );
+
+
+        const data =
+            await apiGet(
+                `/api/watches?${params.toString()}`
+            );
+
+
+        const watches =
+            Array.isArray(data)
+                ? data
+                : data.watches || [];
+
+
+        catalogueState.count =
+            Number(
+                data.count ??
+                watches.length
+            );
+
+
+        renderCatalogue(
+            watches
+        );
+
+
+        renderPagination();
+
+
+        updateCatalogueSummary(
+            watches
+        );
+
+
+        countBadge.textContent =
+            `${catalogueState.count} watch${
+                catalogueState.count === 1
+                    ? ""
+                    : "es"
+            }`;
+
+
+    } catch (error) {
+
+        console.error(
+            "Catalogue load failed:",
+            error
+        );
+
+
+        container.innerHTML =
+            '<div class="error-state">' +
+            'Unable to load catalogue.' +
+            '</div>';
+
+
+        summary.textContent =
+            error.message ||
+            "Unable to load catalogue.";
+
+
+        countBadge.textContent =
+            "Unavailable";
+
+    }
+
+}
+
+
+/* ============================================================
+   Render catalogue
+   ============================================================ */
+
+function renderCatalogue(
+    watches
+) {
+
+    const container =
+        document.getElementById(
+            "catalogue-list"
+        );
+
+
+    if (!watches.length) {
+
+        container.innerHTML =
+            '<div class="empty-state">' +
+            '<strong>No watches found.</strong>' +
+            '<br>' +
+            'Try changing the search or filters.' +
+            '</div>';
+
+        return;
+
+    }
+
+
+    container.innerHTML =
+        watches
+            .map(
+                watch =>
+                    renderWatchCard(
+                        watch
+                    )
+            )
+            .join("");
+
+}
+
+
+/* ============================================================
+   Watch card
+   ============================================================ */
+
+function renderWatchCard(
+    watch
+) {
+
+    const image =
+        watch.image_url ||
+        watch.imageUrl ||
+        "";
+
+
+    const name =
+        watch.name ||
+        "Unnamed watch";
+
+
+    const model =
+        watch.model_number ||
+        watch.modelNumber ||
+        "";
+
+
+    const sku =
+        watch.sku ||
+        "";
+
+
+    const price =
+        watch.price !== null &&
+        watch.price !== undefined
+            ? formatCurrency(
+                watch.price
+            )
+            : "—";
+
+
+    const mrp =
+        watch.mrp !== null &&
+        watch.mrp !== undefined
+            ? formatCurrency(
+                watch.mrp
+            )
+            : "";
+
+
+    const stockCount =
+        watch.stock_count;
+
+
+    let stockText;
+
+    if (!watch.in_stock) {
+
+        stockText =
+            "Out of stock";
+
+    } else if (
+        stockCount !== null &&
+        stockCount !== undefined
+    ) {
+
+        stockText =
+            `${stockCount} available`;
+
+    } else {
+
+        stockText =
+            "In stock";
+
+    }
+
+
+    const source =
+        watch.source === "hmt.in"
+            ? "HMT Watches"
+            : watch.source === "hmt.store"
+                ? "HMT Watches Store"
+                : watch.source || "Unknown source";
+
+
+    const url =
+        watch.product_url ||
+        watch.productUrl ||
+        "#";
+
+
+    return `
+
+        <article class="watch-card">
+
+            <div class="watch-image">
+
+                ${
+                    image
+                        ? `
+                            <img
+                                src="${escapeHtml(image)}"
+                                alt="${escapeHtml(name)}"
+                                loading="lazy"
+                            >
+                          `
+                        : `
+                            <div class="watch-image-placeholder">
+                                HMT
+                            </div>
+                          `
+                }
+
+            </div>
+
+
+            <div class="watch-details">
+
+                <div class="watch-name">
+                    ${escapeHtml(name)}
+                </div>
+
+
+                ${
+                    model
+                        ? `
+                            <div class="watch-model">
+                                ${escapeHtml(model)}
+                            </div>
+                          `
+                        : ""
+                }
+
+
+                ${
+                    sku
+                        ? `
+                            <div class="watch-meta">
+                                SKU: ${escapeHtml(sku)}
+                            </div>
+                          `
+                        : ""
+                }
+
+
+                <div class="watch-meta">
+                    ${escapeHtml(source)}
+                </div>
+
+
+                <div class="watch-footer">
+
+                    <div>
+
+                        <div class="watch-price">
+                            ${escapeHtml(price)}
+                        </div>
+
+                        ${
+                            mrp &&
+                            mrp !== price
+                                ? `
+                                    <div class="watch-mrp">
+                                        MRP ${escapeHtml(mrp)}
+                                    </div>
+                                  `
+                                : ""
+                        }
+
+                    </div>
+
+
+                    <div
+                        class="badge ${
+                            watch.in_stock
+                                ? "badge-success"
+                                : "badge-neutral"
+                        }"
+                    >
+                        ${escapeHtml(stockText)}
+                    </div>
+
+                </div>
+
+
+                <div class="watch-actions">
+
+                    <a
+                        href="${escapeHtml(url)}"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="button button-secondary"
+                    >
+                        View Product
+                    </a>
+
+                </div>
+
+            </div>
+
+        </article>
+
+    `;
+
+}
+
+
+/* ============================================================
+   Summary
+   ============================================================ */
+
+function updateCatalogueSummary(
+    watches
+) {
+
+    const summary =
+        document.getElementById(
+            "catalogue-summary"
+        );
+
+
+    if (!catalogueState.count) {
+
+        summary.textContent =
+            "No watches match the current filters.";
+
+        return;
+
+    }
+
+
+    const start =
+        catalogueState.offset + 1;
+
+
+    const end =
+        Math.min(
+            catalogueState.offset +
+            watches.length,
+            catalogueState.count
+        );
+
+
+    summary.textContent =
+        `Showing ${start}–${end} of ` +
+        `${catalogueState.count} watches`;
+
+}
+
+
+/* ============================================================
+   Pagination
+   ============================================================ */
+
+function renderPagination() {
+
+    const container =
+        document.getElementById(
+            "catalogue-pagination"
+        );
+
+
+    const totalPages =
+        Math.ceil(
+            catalogueState.count /
+            catalogueState.limit
+        );
+
+
+    if (totalPages <= 1) {
+
+        container.innerHTML = "";
+        return;
+
+    }
+
+
+    const currentPage =
+        Math.floor(
+            catalogueState.offset /
+            catalogueState.limit
+        ) + 1;
+
+
+    let html = "";
+
+
+    html += `
+        <button
+            class="button button-secondary"
+            type="button"
+            ${
+                currentPage <= 1
+                    ? "disabled"
+                    : ""
+            }
+            onclick="changeCataloguePage(
+                ${currentPage - 1}
+            )"
+        >
+            Previous
+        </button>
+    `;
+
+
+    html += `
+        <span class="pagination-info">
+            Page ${currentPage} of ${totalPages}
+        </span>
+    `;
+
+
+    html += `
+        <button
+            class="button button-secondary"
+            type="button"
+            ${
+                currentPage >= totalPages
+                    ? "disabled"
+                    : ""
+            }
+            onclick="changeCataloguePage(
+                ${currentPage + 1}
+            )"
+        >
+            Next
+        </button>
+    `;
+
+
+    container.innerHTML = html;
+
+}
+
+
+function changeCataloguePage(
+    page
+) {
+
+    if (page < 1) {
+        return;
+    }
+
+
+    catalogueState.offset =
+        (page - 1) *
+        catalogueState.limit;
+
+
+    loadCatalogue();
+
+
+    window.scrollTo({
+        top: 0,
+        behavior: "smooth"
+    });
+
+}
+
+</script>
+
+{% endblock %}
