@@ -1,0 +1,598 @@
+{% extends "base.html" %}
+
+{% block title %}Settings{% endblock %}
+{% block page_title %}Settings{% endblock %}
+{% block page_subtitle %}
+    Tracker configuration and service status.
+{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+    <div>
+        <h1>Settings</h1>
+        <p>
+            Review the active tracker configuration and source status.
+        </p>
+    </div>
+
+    <button
+        class="button button-secondary"
+        type="button"
+        onclick="loadSettings()"
+    >
+        Refresh
+    </button>
+</div>
+
+
+<section class="panel">
+
+    <div class="panel-header">
+        <div>
+            <h2>Tracker</h2>
+            <p>Current runtime configuration.</p>
+        </div>
+    </div>
+
+    <div id="tracker-settings">
+        <div class="loading-state">
+            Loading configuration...
+        </div>
+    </div>
+
+</section>
+
+
+<section class="panel">
+
+    <div class="panel-header">
+        <div>
+            <h2>Telegram</h2>
+            <p>
+                Telegram credentials are never displayed here.
+            </p>
+        </div>
+    </div>
+
+    <div id="telegram-settings">
+        <div class="loading-state">
+            Loading Telegram status...
+        </div>
+    </div>
+
+</section>
+
+
+<section class="panel">
+
+    <div class="panel-header">
+        <div>
+            <h2>Sources</h2>
+            <p>Enable or disable individual HMT websites.</p>
+        </div>
+    </div>
+
+    <div id="source-settings">
+        <div class="loading-state">
+            Loading sources...
+        </div>
+    </div>
+
+</section>
+
+
+<section class="panel">
+
+    <div class="panel-header">
+        <div>
+            <h2>Alert behaviour</h2>
+            <p>
+                These values are controlled by the application configuration.
+            </p>
+        </div>
+    </div>
+
+    <div id="alert-settings">
+        <div class="loading-state">
+            Loading alert configuration...
+        </div>
+    </div>
+
+</section>
+
+
+<section class="info-panel">
+
+    <div class="info-panel-icon">
+        ℹ
+    </div>
+
+    <div>
+        <h3>Production configuration</h3>
+
+        <p>
+            Secrets such as the Telegram bot token should remain in
+            environment variables and should never be committed to Git.
+        </p>
+
+        <p>
+            Source enable/disable changes are stored in SQLite and therefore
+            survive application restarts.
+        </p>
+    </div>
+
+</section>
+
+
+<script>
+
+async function loadSettings() {
+
+    await Promise.all([
+        loadTrackerConfig(),
+        loadSourcesConfig()
+    ]);
+}
+
+
+async function loadTrackerConfig() {
+
+    const tracker =
+        document.getElementById("tracker-settings");
+
+    const telegram =
+        document.getElementById("telegram-settings");
+
+    const alerts =
+        document.getElementById("alert-settings");
+
+
+    try {
+
+        const response =
+            await fetch("/api/config");
+
+        if (!response.ok) {
+            throw new Error(
+                "Failed to load configuration."
+            );
+        }
+
+        const data =
+            await response.json();
+
+
+        tracker.innerHTML = `
+            <div
+                style="
+                    display:grid;
+                    grid-template-columns:
+                        repeat(auto-fit,minmax(220px,1fr));
+                    gap:16px;
+                "
+            >
+
+                <div class="status-row">
+                    <span class="status-row-label">
+                        Run interval
+                    </span>
+                    <span class="status-row-value">
+                        ${formatInterval(
+                            data.scheduler_interval_seconds
+                        )}
+                    </span>
+                </div>
+
+                <div class="status-row">
+                    <span class="status-row-label">
+                        Startup run
+                    </span>
+                    <span class="status-row-value">
+                        ${
+                            data.scheduler_startup_run
+                                ? "Enabled"
+                                : "Disabled"
+                        }
+                    </span>
+                </div>
+
+                <div class="status-row">
+                    <span class="status-row-label">
+                        HTTP timeout
+                    </span>
+                    <span class="status-row-value">
+                        ${escapeHtml(
+                            data.http_timeout ?? "—"
+                        )} seconds
+                    </span>
+                </div>
+
+                <div class="status-row">
+                    <span class="status-row-label">
+                        HTTP retries
+                    </span>
+                    <span class="status-row-value">
+                        ${escapeHtml(
+                            data.http_retries ?? "—"
+                        )}
+                    </span>
+                </div>
+
+            </div>
+        `;
+
+
+        const telegramConfigured =
+            data.telegram &&
+            data.telegram.configured;
+
+
+        telegram.innerHTML = `
+            <div class="status-row">
+
+                <span class="status-row-label">
+                    Bot connection
+                </span>
+
+                <span>
+                    <span class="badge ${
+                        telegramConfigured
+                            ? "badge-success"
+                            : "badge-neutral"
+                    }">
+                        ${
+                            telegramConfigured
+                                ? "Configured"
+                                : "Not configured"
+                        }
+                    </span>
+                </span>
+
+            </div>
+        `;
+
+
+        const alertConfig =
+            data.alerts || {};
+
+
+        alerts.innerHTML = `
+            <div
+                style="
+                    display:grid;
+                    grid-template-columns:
+                        repeat(auto-fit,minmax(220px,1fr));
+                    gap:10px;
+                "
+            >
+
+                ${settingRow(
+                    "Silent catalogue seed",
+                    alertConfig.seed_silently
+                )}
+
+                ${settingRow(
+                    "New products only",
+                    alertConfig.new_products_only
+                )}
+
+                ${settingRow(
+                    "Only alert when in stock",
+                    alertConfig.only_when_in_stock
+                )}
+
+                ${settingRow(
+                    "Back in stock",
+                    alertConfig.back_in_stock
+                )}
+
+                ${settingRow(
+                    "Out of stock",
+                    alertConfig.out_of_stock
+                )}
+
+                ${settingRow(
+                    "Price changes",
+                    alertConfig.price_changes
+                )}
+
+            </div>
+        `;
+
+    } catch (error) {
+
+        tracker.innerHTML = `
+            <div class="error-state">
+                ${escapeHtml(error.message)}
+            </div>
+        `;
+
+        telegram.innerHTML = "";
+        alerts.innerHTML = "";
+    }
+}
+
+
+async function loadSourcesConfig() {
+
+    const container =
+        document.getElementById("source-settings");
+
+
+    try {
+
+        const response =
+            await fetch("/api/sources");
+
+        if (!response.ok) {
+            throw new Error(
+                "Failed to load sources."
+            );
+        }
+
+        const data =
+            await response.json();
+
+        const sources =
+            Array.isArray(data.sources)
+                ? data.sources
+                : [];
+
+
+        if (!sources.length) {
+
+            container.innerHTML = `
+                <div class="empty-state">
+                    No sources configured.
+                </div>
+            `;
+
+            return;
+        }
+
+
+        container.innerHTML =
+            sources.map(source => {
+
+                const enabled =
+                    source.database_enabled !== false &&
+                    source.enabled !== false;
+
+
+                return `
+                    <div
+                        style="
+                            display:flex;
+                            align-items:center;
+                            justify-content:
+                                space-between;
+                            gap:16px;
+                            padding:16px 0;
+                            border-bottom:
+                                1px solid
+                                var(--border-color,#e5e7eb);
+                        "
+                    >
+
+                        <div>
+
+                            <div
+                                style="
+                                    font-weight:700;
+                                    margin-bottom:4px;
+                                "
+                            >
+                                ${escapeHtml(
+                                    source.name
+                                )}
+                            </div>
+
+                            <div
+                                style="
+                                    color:
+                                        var(
+                                            --text-muted,
+                                            #6b7280
+                                        );
+                                    font-size:13px;
+                                "
+                            >
+                                ${escapeHtml(
+                                    source.base_url || ""
+                                )}
+                            </div>
+
+                        </div>
+
+
+                        <button
+                            class="button ${
+                                enabled
+                                    ? "button-secondary"
+                                    : "button-primary"
+                            }"
+                            type="button"
+                            onclick="toggleSource(
+                                '${encodeURIComponent(
+                                    source.name
+                                )}',
+                                ${enabled}
+                            )"
+                        >
+                            ${
+                                enabled
+                                    ? "Disable"
+                                    : "Enable"
+                            }
+                        </button>
+
+                    </div>
+                `;
+
+            }).join("");
+
+    } catch (error) {
+
+        container.innerHTML = `
+            <div class="error-state">
+                ${escapeHtml(error.message)}
+            </div>
+        `;
+    }
+}
+
+
+async function toggleSource(
+    encodedSource,
+    currentlyEnabled
+) {
+
+    const source =
+        decodeURIComponent(encodedSource);
+
+
+    const action =
+        currentlyEnabled
+            ? "disable"
+            : "enable";
+
+
+    try {
+
+        const response =
+            await fetch(
+                `/api/sources/${encodeURIComponent(source)}/${action}`,
+                {
+                    method: "POST"
+                }
+            );
+
+
+        if (!response.ok) {
+
+            let message =
+                "Could not change source status.";
+
+            try {
+
+                const data =
+                    await response.json();
+
+                message =
+                    data.detail || message;
+
+            } catch (error) {
+                // Keep fallback message.
+            }
+
+            throw new Error(message);
+        }
+
+
+        if (typeof showNotification === "function") {
+
+            showNotification(
+                `${source} ${action}d.`,
+                "success"
+            );
+        }
+
+
+        await loadSourcesConfig();
+
+    } catch (error) {
+
+        if (typeof showNotification === "function") {
+
+            showNotification(
+                error.message,
+                "error"
+            );
+
+        } else {
+
+            alert(error.message);
+        }
+    }
+}
+
+
+function settingRow(label, value) {
+
+    return `
+        <div
+            style="
+                display:flex;
+                justify-content:space-between;
+                align-items:center;
+                gap:12px;
+                padding:12px 14px;
+                border:1px solid
+                    var(--border-color,#e5e7eb);
+                border-radius:10px;
+            "
+        >
+
+            <span
+                style="
+                    font-size:14px;
+                    font-weight:600;
+                "
+            >
+                ${escapeHtml(label)}
+            </span>
+
+            <span
+                class="badge ${
+                    value
+                        ? "badge-success"
+                        : "badge-neutral"
+                }"
+            >
+                ${value ? "Enabled" : "Disabled"}
+            </span>
+
+        </div>
+    `;
+}
+
+
+function formatInterval(seconds) {
+
+    const value =
+        Number(seconds);
+
+
+    if (!Number.isFinite(value)) {
+        return "—";
+    }
+
+
+    if (value < 60) {
+        return `${value} seconds`;
+    }
+
+
+    if (value % 3600 === 0) {
+        return `${value / 3600} hour(s)`;
+    }
+
+
+    if (value % 60 === 0) {
+        return `${value / 60} minute(s)`;
+    }
+
+
+    return `${value} seconds`;
+}
+
+
+document.addEventListener(
+    "DOMContentLoaded",
+    loadSettings
+);
+
+</script>
+
+{% endblock %}

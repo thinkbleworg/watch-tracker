@@ -76,7 +76,7 @@ class TrackerConfig:
     # Scheduler
     # ------------------------------------------------------------------
 
-    scrape_interval_seconds: int = 300
+    scrape_interval_seconds: int = 60
     run_on_startup: bool = True
 
     # ------------------------------------------------------------------
