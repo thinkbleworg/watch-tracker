@@ -17,28 +17,33 @@ class HMTStoreScraper(BaseScraper):
     """
     Scraper for https://www.hmtwatches.store
 
-    The store frontend uses the SmartPOS catalogue API:
+    Discovery:
+        POST SmartPOS catalogue API and paginate through the complete
+        catalogue.
 
-        POST https://smartpos.amazon.in/api-unauthenticated/resources/external/catalog/products
-            ?groupVariants=true
+    Stock:
+        The bulk catalogue is used first.
 
-    Request body:
+        When the bulk response is internally ambiguous, the SmartBiz
+        product-detail API is queried for authoritative product-level
+        availability.
 
-        {
-            "filter": {
-                "division": null,
-                "isBestSeller": null,
-                "isInStock": null
-            },
-            "shopId": 48236,
-            "offset": 0,
-            "limit": 10
-        }
+    Product detail endpoint:
+        GET https://api.smartbiz.in/stores/{shop_id}/v2/catalog/{product_id}
+
+    Important:
+        We deliberately do NOT request the detail endpoint for every
+        product on every scrape. The store currently exposes hundreds
+        of products and the tracker runs every minute in production.
     """
 
     API_URL = (
         "https://smartpos.amazon.in/"
         "api-unauthenticated/resources/external/catalog/products"
+    )
+
+    DETAIL_API_URL = (
+        "https://api.smartbiz.in/stores/{shop_id}/v2/catalog/{product_id}"
     )
 
     def __init__(
@@ -58,6 +63,10 @@ class HMTStoreScraper(BaseScraper):
 
         self.shop_id = shop_id
         self.page_size = page_size
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def scrape(self) -> list[Watch]:
         """
@@ -90,8 +99,6 @@ class HMTStoreScraper(BaseScraper):
                 if watch is None:
                     continue
 
-                # The API can expose variant information. Keep the primary
-                # product/sku as the stable identity for the catalogue.
                 identity = (
                     watch.id
                     or watch.sku
@@ -119,12 +126,21 @@ class HMTStoreScraper(BaseScraper):
 
             offset += self.page_size
 
+        if not watches:
+            raise RuntimeError(
+                "HMT store source returned no parseable products."
+            )
+
         logger.info(
             "HMT store returned %s products.",
             len(watches),
         )
 
         return watches
+
+    # ------------------------------------------------------------------
+    # Catalogue API
+    # ------------------------------------------------------------------
 
     def _fetch_page(
         self,
@@ -133,7 +149,7 @@ class HMTStoreScraper(BaseScraper):
         limit: int,
     ) -> list[dict[str, Any]]:
         """
-        Fetch one page using the same request shape as the live store.
+        Fetch one page from the SmartPOS catalogue API.
         """
         response = self.post(
             self.API_URL,
@@ -178,8 +194,6 @@ class HMTStoreScraper(BaseScraper):
     def _extract_products(payload: Any) -> list[Any]:
         """
         Handle the current API response as well as common wrapper formats.
-
-        The current HMT API returns the product list directly.
         """
         if isinstance(payload, list):
             return payload
@@ -207,20 +221,29 @@ class HMTStoreScraper(BaseScraper):
 
         return []
 
-    def _parse_product(self, product: dict[str, Any]) -> Watch | None:
+    # ------------------------------------------------------------------
+    # Product parsing
+    # ------------------------------------------------------------------
+
+    def _parse_product(
+        self,
+        product: dict[str, Any],
+    ) -> Watch | None:
         """
         Convert one SmartPOS product into our common Watch model.
         """
         if self._is_deactivated(product):
             return None
-        
+
         product_id = (
             product.get("primaryProductId")
             or product.get("sku")
             or product.get("customId")
         )
 
-        name = self._clean_string(product.get("name"))
+        name = self._clean_string(
+            product.get("name")
+        )
 
         if not product_id or not name:
             logger.warning(
@@ -229,9 +252,16 @@ class HMTStoreScraper(BaseScraper):
             )
             return None
 
-        sku = self._clean_string(product.get("sku"))
+        product_id = str(product_id)
 
-        mrp = self._number_or_none(product.get("mrp"))
+        sku = self._clean_string(
+            product.get("sku")
+        )
+
+        mrp = self._number_or_none(
+            product.get("mrp")
+        )
+
         selling_price = self._number_or_none(
             product.get("sellingPrice")
         )
@@ -239,21 +269,21 @@ class HMTStoreScraper(BaseScraper):
         if selling_price is None:
             selling_price = mrp
 
-        in_stock, stock = self._stock(product)
+        in_stock, stock = self._stock(
+            product,
+            product_id=product_id,
+        )
 
         image_url = self._clean_string(
             product.get("productImageUrl")
         )
 
-        # The store is a dynamic frontend, so the API does not expose
-        # a normal product URL in the catalogue response. Build the
-        # product URL using the product ID only when appropriate.
         product_url = self._build_product_url(
-            product_id=str(product_id),
+            product_id=product_id,
         )
 
         return Watch.create(
-            id=str(product_id),
+            id=product_id,
             source="hmt.store",
             name=name,
             product_url=product_url,
@@ -265,30 +295,34 @@ class HMTStoreScraper(BaseScraper):
             image_url=image_url,
         )
 
+    # ------------------------------------------------------------------
+    # Stock handling
+    # ------------------------------------------------------------------
+
     def _extract_stock(
         self,
         product: dict[str, Any],
     ) -> tuple[int | None, bool]:
         """
-        Extract stock count and in-stock status from the SmartPOS response.
+        Extract stock count/status from the bulk SmartPOS response.
 
-        Priority:
-        1. Explicit additionalAttributes.isOOS=true overrides everything.
-        2. Numeric currentStock is the strongest stock signal.
-        3. Availability flags are used when currentStock is unavailable.
+        Rules:
+
+        1. Explicit isOOS=True means out of stock.
+        2. A positive currentStock means in stock.
+        3. A positive/true availability signal means in stock.
+        4. Explicit false availability means out of stock.
+        5. Otherwise the state is ambiguous and returns (None, False).
+           _stock() may then verify it through the product-detail API.
         """
+        additional_attributes = product.get(
+            "additionalAttributes"
+        )
 
-        additional_attributes = product.get("additionalAttributes")
+        additional_attributes = self._parse_json_object(
+            additional_attributes
+        )
 
-        if isinstance(additional_attributes, str):
-            try:
-                additional_attributes = json.loads(additional_attributes)
-            except (TypeError, ValueError):
-                additional_attributes = {}
-        elif not isinstance(additional_attributes, dict):
-            additional_attributes = {}
-
-        # Explicit OOS flag always wins.
         if additional_attributes.get("isOOS") is True:
             return 0, False
 
@@ -296,65 +330,385 @@ class HMTStoreScraper(BaseScraper):
 
         if stock_value is not None:
             try:
-                stock_count = int(stock_value)
+                stock_number = float(stock_value)
 
-                if stock_count > 0:
+                if stock_number > 0:
+                    stock_count = int(stock_number)
+
                     return stock_count, True
 
-                if stock_count == 0:
+                if stock_number == 0:
                     return 0, False
 
             except (TypeError, ValueError):
                 pass
 
-        buying_options = product.get("buyingOptions") or {}
-        single_purchase = buying_options.get("singlePurchase") or {}
-        availability = single_purchase.get("availability") or {}
+        buying_options = (
+            product.get("buyingOptions")
+            or {}
+        )
 
-        if availability.get("isBuyable") is True:
+        single_purchase = (
+            buying_options.get("singlePurchase")
+            or {}
+        )
+
+        availability = (
+            single_purchase.get("availability")
+            or {}
+        )
+
+        is_buyable = availability.get("isBuyable")
+        in_stock = availability.get("inStock")
+
+        if is_buyable is True and in_stock is True:
             return None, True
 
-        if availability.get("inStock") is True:
+        if is_buyable is True:
             return None, True
 
-        if availability.get("isBuyable") is False:
+        if in_stock is True:
+            return None, True
+
+        if is_buyable is False:
             return None, False
 
-        if availability.get("inStock") is False:
+        if in_stock is False:
             return None, False
 
         return None, False
 
+    def _stock(
+        self,
+        product: dict[str, Any],
+        *,
+        product_id: str | None = None,
+    ) -> tuple[bool, int | None]:
+        """
+        Return (in_stock, stock_count).
+
+        For ambiguous bulk responses, verify the product against the
+        SmartBiz product-detail endpoint.
+
+        A detail API failure does NOT turn the product into an
+        in-stock product. The safe fallback is the bulk result.
+        """
+        stock_count, in_stock = self._extract_stock(
+            product
+        )
+
+        if not self._needs_detail_check(product):
+            return in_stock, stock_count
+
+        if not product_id:
+            return in_stock, stock_count
+
+        try:
+            detail = self._fetch_product_detail(
+                product_id
+            )
+
+            detail_stock_count, detail_in_stock = (
+                self._extract_detail_stock(detail)
+            )
+
+            logger.debug(
+                "HMT store detail stock: id=%s in_stock=%s "
+                "stock_count=%s",
+                product_id,
+                detail_in_stock,
+                detail_stock_count,
+            )
+
+            return (
+                detail_in_stock,
+                detail_stock_count,
+            )
+
+        except Exception:
+            logger.warning(
+                "Unable to verify HMT store stock detail for %s; "
+                "using bulk catalogue state.",
+                product_id,
+                exc_info=True,
+            )
+
+            return in_stock, stock_count
+
     @staticmethod
-    def _parse_json_object(value: Any) -> dict[str, Any]:
+    def _needs_detail_check(
+        product: dict[str, Any],
+    ) -> bool:
+        """
+        Decide whether the bulk stock response needs verification.
+
+        We only use the detail API for ambiguous cases.
+
+        In particular, a product with:
+            isOOS=False
+            currentStock=0
+
+        is suspicious because the store can expose contradictory
+        availability metadata. Such products are verified individually.
+        """
+        additional_attributes = (
+            product.get("additionalAttributes")
+        )
+
+        additional_attributes = (
+            HMTStoreScraper._parse_json_object(
+                additional_attributes
+            )
+        )
+
+        if additional_attributes.get("isOOS") is True:
+            return False
+
+        stock_value = product.get("currentStock")
+
+        if stock_value is not None:
+            try:
+                stock_number = float(stock_value)
+
+                if stock_number > 0:
+                    return False
+
+                if stock_number == 0:
+                    return (
+                        additional_attributes.get("isOOS")
+                        is not True
+                    )
+
+            except (TypeError, ValueError):
+                pass
+
+        buying_options = (
+            product.get("buyingOptions")
+            or {}
+        )
+
+        single_purchase = (
+            buying_options.get("singlePurchase")
+            or {}
+        )
+
+        availability = (
+            single_purchase.get("availability")
+            or {}
+        )
+
+        is_buyable = availability.get("isBuyable")
+        in_stock = availability.get("inStock")
+
+        # Explicitly positive and internally consistent.
+        if is_buyable is True and in_stock is True:
+            return False
+
+        # Explicit OOS signals do not need another request.
+        if is_buyable is False and in_stock is False:
+            return False
+
+        # Everything else is ambiguous.
+        return True
+
+    # ------------------------------------------------------------------
+    # SmartBiz product-detail API
+    # ------------------------------------------------------------------
+
+    def _fetch_product_detail(
+        self,
+        product_id: str,
+    ) -> dict[str, Any]:
+        """
+        Fetch one product from the SmartBiz catalogue API.
+        """
+        url = self.DETAIL_API_URL.format(
+            shop_id=self.shop_id,
+            product_id=product_id,
+        )
+
+        response = self.get(
+            url,
+            headers={
+                "Accept": "application/json",
+                "Referer": self.base_url,
+            },
+        )
+
+        payload = response.json()
+
+        if not isinstance(payload, dict):
+            raise ValueError(
+                "Unexpected HMT store detail response: "
+                f"expected object, got {type(payload).__name__}"
+            )
+
+        return payload
+
+    @classmethod
+    def _extract_detail_stock(
+        cls,
+        payload: dict[str, Any],
+    ) -> tuple[int | None, bool]:
+        """
+        Extract stock from the SmartBiz product-detail response.
+
+        For the observed API response:
+
+            variantsInfo[0].attributes.oos
+            variantsInfo[0].attributes.quantity
+            variantsInfo[0].attributes.buyingOptions.singlePurchase.availability
+
+        Availability precedence:
+
+            oos=True
+                -> out of stock
+
+            otherwise:
+                inStock=True AND isBuyable=True
+                -> in stock
+
+            otherwise:
+                -> out of stock
+
+        We only report a numeric stock count when the API provides a
+        usable quantity.
+        """
+        variants = payload.get("variantsInfo")
+
+        if not isinstance(variants, list) or not variants:
+            return 0, False
+
+        total_stock = 0
+        have_numeric_quantity = False
+
+        any_buyable = False
+        any_in_stock = False
+
+        for variant in variants:
+            if not isinstance(variant, dict):
+                continue
+
+            attributes = variant.get("attributes")
+
+            if not isinstance(attributes, dict):
+                continue
+
+            if attributes.get("deactivated") is True:
+                continue
+
+            # Explicit OOS is authoritative for that variant.
+            if attributes.get("oos") is True:
+                continue
+
+            quantity = cls._number_or_none(
+                attributes.get("quantity")
+            )
+
+            if quantity is not None:
+                try:
+                    numeric_quantity = float(quantity)
+
+                    if numeric_quantity > 0:
+                        total_stock += int(
+                            numeric_quantity
+                        )
+
+                        have_numeric_quantity = True
+
+                except (TypeError, ValueError):
+                    pass
+
+            buying_options = (
+                attributes.get("buyingOptions")
+                or {}
+            )
+
+            single_purchase = (
+                buying_options.get("singlePurchase")
+                or {}
+            )
+
+            availability = (
+                single_purchase.get("availability")
+                or {}
+            )
+
+            variant_in_stock = (
+                availability.get("inStock")
+            )
+
+            variant_buyable = (
+                availability.get("isBuyable")
+            )
+
+            if variant_in_stock is True:
+                any_in_stock = True
+
+            if variant_buyable is True:
+                any_buyable = True
+
+        # A numeric positive quantity is the strongest signal.
+        if have_numeric_quantity and total_stock > 0:
+            return total_stock, True
+
+        # The product must be both available and buyable to be treated
+        # as currently purchasable.
+        if any_in_stock and any_buyable:
+            return None, True
+
+        # If the API exposes inStock without a usable quantity but no
+        # buyable flag, do not claim inventory.
+        return 0, False
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_json_object(
+        value: Any,
+    ) -> dict[str, Any]:
         if isinstance(value, dict):
             return value
 
-        if not isinstance(value, str) or not value.strip():
+        if not isinstance(value, str):
+            return {}
+
+        if not value.strip():
             return {}
 
         try:
             parsed = json.loads(value)
 
-            if isinstance(parsed, dict):
-                return parsed
-
         except (TypeError, ValueError, json.JSONDecodeError):
-            pass
+            return {}
+
+        if isinstance(parsed, dict):
+            return parsed
 
         return {}
 
-    def _build_product_url(self, *, product_id: str) -> str:
+    def _build_product_url(
+        self,
+        *,
+        product_id: str,
+    ) -> str:
         """
-        Return a useful store URL.
+        Return the canonical HMT store product URL.
 
-        The catalogue API response does not provide a canonical product
-        URL, so keep the store homepage as the safe fallback.
+        Example:
+            /product/6fc9b813-4333-4bae-8cc9-bb2461a2c7d2
         """
-        return f"{self.base_url.rstrip('/')}/"
+        return (
+            f"{self.base_url.rstrip('/')}"
+            f"/product/{product_id}"
+        )
 
     @staticmethod
-    def _clean_string(value: Any) -> str | None:
+    def _clean_string(
+        value: Any,
+    ) -> str | None:
         if value is None:
             return None
 
@@ -363,7 +717,9 @@ class HMTStoreScraper(BaseScraper):
         return value or None
 
     @staticmethod
-    def _number_or_none(value: Any) -> int | float | None:
+    def _number_or_none(
+        value: Any,
+    ) -> int | float | None:
         if value is None or value == "":
             return None
 
@@ -378,22 +734,24 @@ class HMTStoreScraper(BaseScraper):
 
         return number
 
-    def _stock(
-        self,
-        product: dict[str, Any],
-    ) -> tuple[bool, int | None]:
-        """
-        Return (in_stock, stock_count).
-
-        Keep this helper as part of the scraper's existing interface because
-        the test suite and parser use it directly.
-        """
-        stock_count, in_stock = self._extract_stock(product)
-        return in_stock, stock_count
-
     @staticmethod
-    def _is_deactivated(product: dict[str, Any]) -> bool:
+    def _is_deactivated(
+        product: dict[str, Any],
+    ) -> bool:
         """
-        Return True when the store explicitly marks a product as deactivated.
+        Return True when the store explicitly marks a product as
+        deactivated.
         """
-        return product.get("deactivated") is True
+        if product.get("deactivated") is True:
+            return True
+
+        additional_attributes = (
+            HMTStoreScraper._parse_json_object(
+                product.get("additionalAttributes")
+            )
+        )
+
+        return (
+            additional_attributes.get("deactivated")
+            is True
+        )
