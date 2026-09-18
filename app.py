@@ -193,11 +193,14 @@ def _parse_tracking_rule(
         if source == "":
             source = None
 
-    if source is not None and config.get_source(source) is None:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Unknown source: {source}",
-        )
+    if source is not None:
+        try:
+            config.get_source(source)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown source: {source}",
+            ) from exc
 
     enabled_value = payload.get(
         "enabled",
@@ -371,12 +374,17 @@ def api_status() -> dict[str, Any]:
     """
     scheduler_status = scheduler.status()
 
-    last_run_at = scheduler_status.get(
-        "last_run_at",
+    recent_runs = db.get_scrape_runs(limit=1)
+    last_run_record = recent_runs[0] if recent_runs else None
+
+    last_run = (
+        last_run_record.get("finished_at")
+        if last_run_record and last_run_record.get("finished_at")
+        else None
     )
 
-    last_run = _utc_iso_from_timestamp(
-        last_run_at,
+    last_run_at = scheduler_status.get(
+        "last_run_at",
     )
 
     next_run = None
@@ -410,6 +418,7 @@ def api_status() -> dict[str, Any]:
         "last_completed_run": last_run,
         "last_run_at": last_run,
         "next_run": next_run,
+        "last_run_record": last_run_record,
         "telegram": {
             "enabled": telegram.enabled,
         },
@@ -427,15 +436,17 @@ def api_run_tracker() -> dict[str, Any]:
     try:
         result = scheduler.run_now()
 
-    except Exception as exc:
-        logger.exception(
-            "Manual tracker run failed",
-        )
+    except RuntimeError as exc:
+        message = str(exc)
+        if "already in progress" in message.lower():
+            logger.warning("Manual tracker run rejected: %s", message)
+            raise HTTPException(status_code=409, detail=message) from exc
+        logger.exception("Manual tracker run failed with RuntimeError")
+        raise HTTPException(status_code=500, detail=message) from exc
 
-        raise HTTPException(
-            status_code=409,
-            detail=str(exc),
-        ) from exc
+    except Exception as exc:
+        logger.exception("Manual tracker run failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return {
         "success": result.success,
@@ -461,6 +472,15 @@ def api_run_tracker() -> dict[str, Any]:
             ],
         },
     }
+
+
+@app.get("/api/runs")
+def api_runs(
+    limit: int = Query(default=50, ge=1, le=500),
+) -> dict[str, Any]:
+    """Return recent tracker run history from SQLite."""
+    runs = db.get_scrape_runs(limit=limit)
+    return {"count": len(runs), "runs": runs}
 
 
 # ---------------------------------------------------------------------------

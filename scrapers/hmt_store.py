@@ -561,15 +561,19 @@ class HMTStoreScraper(BaseScraper):
 
         Availability precedence:
 
-            oos=True
-                -> out of stock
+            positive quantity
+                -> in stock
 
             otherwise:
-                inStock=True AND isBuyable=True
+                inStock=True
                 -> in stock
 
             otherwise:
                 -> out of stock
+
+        SmartBiz has been observed returning contradictory metadata where
+        oos=True while inStock=True, so an explicit positive inStock signal
+        is allowed to override the stale oos flag.
 
         We only report a numeric stock count when the API provides a
         usable quantity.
@@ -597,27 +601,9 @@ class HMTStoreScraper(BaseScraper):
             if attributes.get("deactivated") is True:
                 continue
 
-            # Explicit OOS is authoritative for that variant.
-            if attributes.get("oos") is True:
-                continue
-
             quantity = cls._number_or_none(
                 attributes.get("quantity")
             )
-
-            if quantity is not None:
-                try:
-                    numeric_quantity = float(quantity)
-
-                    if numeric_quantity > 0:
-                        total_stock += int(
-                            numeric_quantity
-                        )
-
-                        have_numeric_quantity = True
-
-                except (TypeError, ValueError):
-                    pass
 
             buying_options = (
                 attributes.get("buyingOptions")
@@ -642,6 +628,30 @@ class HMTStoreScraper(BaseScraper):
                 availability.get("isBuyable")
             )
 
+            # SmartBiz can expose contradictory metadata. In particular,
+            # an observed live product state had oos=True while inStock=True.
+            # Treat the explicit availability signal as stronger when it
+            # positively says the variant is in stock.
+            if (
+                attributes.get("oos") is True
+                and variant_in_stock is not True
+            ):
+                continue
+
+            if quantity is not None:
+                try:
+                    numeric_quantity = float(quantity)
+
+                    if numeric_quantity > 0:
+                        total_stock += int(
+                            numeric_quantity
+                        )
+
+                        have_numeric_quantity = True
+
+                except (TypeError, ValueError):
+                    pass
+
             if variant_in_stock is True:
                 any_in_stock = True
 
@@ -652,13 +662,16 @@ class HMTStoreScraper(BaseScraper):
         if have_numeric_quantity and total_stock > 0:
             return total_stock, True
 
-        # The product must be both available and buyable to be treated
-        # as currently purchasable.
-        if any_in_stock and any_buyable:
+        # The storefront's explicit availability flag is the next strongest
+        # signal. This intentionally handles the observed state where
+        # inStock=True but isBuyable=False.
+        if any_in_stock:
             return None, True
 
-        # If the API exposes inStock without a usable quantity but no
-        # buyable flag, do not claim inventory.
+        # isBuyable without inStock is not enough to claim inventory.
+        if any_buyable:
+            return None, False
+
         return 0, False
 
     # ------------------------------------------------------------------

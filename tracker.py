@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
@@ -102,6 +103,61 @@ class Tracker:
         self._run_lock = threading.Lock()
 
     # ------------------------------------------------------------------
+    # Run recovery
+    # ------------------------------------------------------------------
+
+    def _recover_stale_runs(self) -> None:
+        """Mark abandoned scrape runs as failed.
+
+        A process restart or an unexpected termination can leave a scrape
+        record stuck in ``running`` state. Only runs older than ten minutes
+        are recovered so a legitimately long-running scrape is not marked
+        failed while it is still active.
+        """
+
+        now = datetime.now(timezone.utc)
+        stale_after = timedelta(minutes=10)
+
+        for run in self.db.get_scrape_runs(limit=100):
+            if run.get("status") != "running":
+                continue
+
+            started_at = run.get("started_at")
+            if not started_at:
+                continue
+
+            try:
+                started = datetime.fromisoformat(
+                    str(started_at).replace("Z", "+00:00")
+                )
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Could not parse started_at for scrape run %s: %r",
+                    run.get("id"),
+                    started_at,
+                )
+                continue
+
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+
+            if now - started <= stale_after:
+                continue
+
+            run_id = int(run["id"])
+            self.db.finish_scrape_run(
+                run_id,
+                status="failed",
+                error="Run interrupted before completion.",
+            )
+
+            logger.warning(
+                "Recovered stale scrape run %s as failed; it started at %s.",
+                run_id,
+                started_at,
+            )
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -132,6 +188,11 @@ class Tracker:
             raise RuntimeError(
                 "A tracker run is already in progress."
             )
+
+        # Recover abandoned records before creating the new run record.
+        # This keeps the run history accurate after a process/container
+        # restart without touching a scrape that may still be active.
+        self._recover_stale_runs()
 
         run_id = self.db.start_scrape_run()
 
