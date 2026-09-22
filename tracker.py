@@ -610,6 +610,82 @@ class Tracker:
                 )
 
     # ------------------------------------------------------------------
+    # Tracking-rule activation
+    # ------------------------------------------------------------------
+
+    def activate_tracking_rule(
+        self,
+        rule: TrackingRule,
+        *,
+        alert_callback: Callable[[AlertCandidate], None] | None = None,
+    ) -> int:
+        """
+        Immediately evaluate a newly enabled tracking rule against the
+        existing catalogue.
+
+        This is intentionally separate from normal scrape processing. A
+        watch may already be in stock when a user creates a tracker; in
+        that case there is no ``new product`` or ``back in stock`` event
+        for the scraper to detect. The rule activation itself is the event
+        that should produce the initial alert.
+
+        Returns the number of alert records created.
+        """
+
+        if not rule.enabled:
+            return 0
+
+        watches = self.db.get_watches(
+            source=rule.source,
+            in_stock=True,
+        )
+
+        created = 0
+
+        for watch in watches:
+            if not rule.matches(watch):
+                continue
+
+            alert_id = self.db.create_alert(
+                watch=watch,
+                alert_type="tracked",
+                status="pending",
+                telegram_chat_id=(
+                    self.config.telegram.chat_id or None
+                ),
+            )
+
+            created += 1
+
+            candidate = AlertCandidate(
+                watch=watch,
+                alert_type="tracked",
+                rule_ids=[rule.id],
+            )
+
+            logger.info(
+                "Created initial tracking alert %s for rule %s and watch %s.",
+                alert_id,
+                rule.id,
+                watch.name,
+            )
+
+            if alert_callback is not None:
+                try:
+                    alert_callback(candidate)
+                except Exception as exc:
+                    self.db.mark_alert_failed(
+                        alert_id,
+                        str(exc),
+                    )
+                    logger.exception(
+                        "Tracking alert callback failed for watch %s.",
+                        watch.id,
+                    )
+
+        return created
+
+    # ------------------------------------------------------------------
     # First-run detection
     # ------------------------------------------------------------------
 

@@ -249,3 +249,67 @@ def test_watch_can_alert_again_after_going_out_of_stock_and_returning(
         alert["alert_type"] == "back_in_stock"
         for alert in alerts
     )
+
+def test_creating_rule_can_alert_for_already_in_stock_watch(tmp_path):
+    db = Database(str(tmp_path / "test.db"))
+
+    tracker = Tracker(
+        db,
+        tracker_config=make_tracker_config(),
+    )
+
+    watch = make_watch(
+        watch_id="watch-1",
+        in_stock=True,
+    )
+    db.save_watch(watch)
+
+    rule = make_matching_rule()
+    db.save_tracking_rule(rule)
+
+    candidates = []
+
+    created = tracker.activate_tracking_rule(
+        rule,
+        alert_callback=candidates.append,
+    )
+
+    alerts = db.get_alerts()
+
+    assert created == 1
+    assert len(alerts) == 1
+    assert alerts[0]["watch_id"] == "watch-1"
+    assert alerts[0]["alert_type"] == "tracked"
+    assert alerts[0]["status"] == "pending"
+
+    assert len(candidates) == 1
+    assert candidates[0].watch.id == "watch-1"
+    assert candidates[0].alert_type == "tracked"
+    assert candidates[0].rule_ids == ["rule-1"]
+
+
+def test_creating_rule_does_not_alert_for_non_matching_watch(tmp_path):
+    db = Database(str(tmp_path / "test.db"))
+
+    tracker = Tracker(
+        db,
+        tracker_config=make_tracker_config(),
+    )
+
+    db.save_watch(
+        Watch.create(
+            id="watch-1",
+            source="hmt.store",
+            name="Different Watch",
+            product_url="https://example.com/watch",
+            in_stock=True,
+            stock_count=5,
+        )
+    )
+
+    rule = make_matching_rule()
+
+    created = tracker.activate_tracking_rule(rule)
+
+    assert created == 0
+    assert db.get_alerts() == []

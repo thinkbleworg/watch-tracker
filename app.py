@@ -627,9 +627,18 @@ def api_create_tracking_rule(
         rule,
     )
 
+    # A newly created tracker must also evaluate watches that are already
+    # in stock. Waiting for a stock transition would miss watches that were
+    # already available when the user created the tracker.
+    initial_alerts = tracker.activate_tracking_rule(
+        rule,
+        alert_callback=telegram.send_candidate,
+    )
+
     return {
         "success": True,
         "rule": _rule_to_dict(rule),
+        "initial_alerts_created": initial_alerts,
     }
 
 
