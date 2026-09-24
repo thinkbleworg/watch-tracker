@@ -242,7 +242,7 @@
             <select
                 id="status-filter"
                 class="form-select"
-                onchange="loadAlerts()"
+                onchange="resetAlertPage()"
             >
                 <option value="">All alerts</option>
                 <option value="pending">Pending</option>
@@ -272,7 +272,7 @@
             <select
                 id="alert-limit"
                 class="form-select"
-                onchange="loadAlerts()"
+                onchange="resetAlertPage()"
             >
                 <option value="25">25 alerts</option>
                 <option value="50">50 alerts</option>
@@ -291,6 +291,55 @@
 <section class="panel">
 
     <div
+        style="
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:12px;
+            flex-wrap:wrap;
+            margin-bottom:12px;
+        "
+    >
+        <label
+            style="
+                display:flex;
+                align-items:center;
+                gap:8px;
+                font-size:13px;
+                font-weight:600;
+            "
+        >
+            <input
+                id="select-all-alerts"
+                type="checkbox"
+                onchange="toggleAllAlerts(this.checked)"
+            >
+            Select all on this page
+        </label>
+
+        <button
+            id="delete-selected-alerts-button"
+            class="button button-danger button-small"
+            type="button"
+            onclick="deleteSelectedAlerts()"
+            disabled
+        >
+            Delete selected
+        </button>
+    </div>
+
+    <div
+        id="alerts-selection-summary"
+        style="
+            color:var(--text-muted,#6b7280);
+            font-size:12px;
+            margin-bottom:10px;
+        "
+    >
+        No alerts selected.
+    </div>
+
+    <div
         id="alerts-list"
         class="alert-list"
     >
@@ -298,6 +347,20 @@
             Loading alerts...
         </div>
     </div>
+
+    <div
+        id="alerts-pagination"
+        style="
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:12px;
+            flex-wrap:wrap;
+            padding-top:16px;
+            margin-top:4px;
+            border-top:1px solid var(--border-color,#e5e7eb);
+        "
+    ></div>
 
 </section>
 
@@ -433,7 +496,9 @@
             "new": "New watch",
             "back_in_stock": "Back in stock",
             "out_of_stock": "Out of stock",
-            "price_change": "Price change"
+            "price_change": "Price change",
+            "repeat": "Repeat alert",
+            "tracked": "Tracked watch"
         };
 
         return labels[type] || type || "Alert";
@@ -507,6 +572,15 @@
                 </a>
             `;
         }
+        actionHtml += `
+            <button
+                type="button"
+                class="button button-danger button-small"
+                onclick="deleteAlert(${Number(alert.id)})"
+            >
+                Delete
+            </button>
+        `;
 
 
         let errorHtml = "";
@@ -551,6 +625,7 @@
                     padding:18px;
                     border-bottom:1px solid var(--border-color,#e5e7eb);
                 "
+                data-alert-id="${escape(alert.id)}"
             >
 
                 <div
@@ -562,6 +637,22 @@
                         flex-wrap:wrap;
                     "
                 >
+
+                    <div
+                        style="
+                            display:flex;
+                            align-items:flex-start;
+                            padding-top:3px;
+                        "
+                    >
+                        <input
+                            class="alert-select"
+                            type="checkbox"
+                            value="${escape(alert.id)}"
+                            aria-label="Select alert ${escape(alert.id)}"
+                            onchange="updateAlertSelectionState()"
+                        >
+                    </div>
 
                     <div style="min-width:0;flex:1;">
 
@@ -709,6 +800,14 @@
         container.innerHTML = alerts
             .map(renderAlert)
             .join("");
+
+        const selectAll = document.getElementById("select-all-alerts");
+        if (selectAll) {
+            selectAll.checked = false;
+            selectAll.indeterminate = false;
+        }
+
+        updateAlertSelectionState();
     }
 
 
@@ -761,24 +860,32 @@
     }
 
 
+    let currentPage = 1;
+
+
+    function getAlertPageSize() {
+        const element = document.getElementById("alert-limit");
+        const value = element ? Number(element.value) : 25;
+        return Number.isFinite(value) && value > 0 ? value : 25;
+    }
+
+
+    function getAlertStatus() {
+        const element = document.getElementById("status-filter");
+        return element ? element.value : "";
+    }
+
+
+    function resetAlertPage() {
+        currentPage = 1;
+        loadAlerts();
+    }
+
+
     async function fetchAlerts() {
 
-        const statusElement = document.getElementById(
-            "status-filter"
-        );
-
-        const limitElement = document.getElementById(
-            "alert-limit"
-        );
-
-        const status = statusElement
-            ? statusElement.value
-            : "";
-
-        const limit = limitElement
-            ? limitElement.value
-            : "100";
-
+        const status = getAlertStatus();
+        const limit = getAlertPageSize();
 
         const params = new URLSearchParams();
 
@@ -786,16 +893,14 @@
             params.set("status", status);
         }
 
-        params.set("limit", limit);
-
+        params.set("page", String(currentPage));
+        params.set("limit", String(limit));
 
         const url = "/api/alerts?" + params.toString();
-
 
         if (typeof apiGet === "function") {
             return await apiGet(url);
         }
-
 
         const response = await fetch(url);
 
@@ -809,12 +914,82 @@
     }
 
 
+    function renderAlertPagination(data) {
+
+        const container = document.getElementById("alerts-pagination");
+
+        if (!container) {
+            return;
+        }
+
+        const page = Number(data.page || 1);
+        const totalPages = Number(data.total_pages || 1);
+        const total = Number(data.total || 0);
+        const limit = Number(data.limit || getAlertPageSize());
+
+        if (total === 0) {
+            container.innerHTML = "";
+            return;
+        }
+
+        const first = ((page - 1) * limit) + 1;
+        const last = Math.min(page * limit, total);
+
+        container.innerHTML = `
+            <div style="font-size:12px;color:var(--text-muted,#6b7280);">
+                Showing ${first}–${last} of ${total} alerts
+            </div>
+
+            <div style="display:flex;align-items:center;gap:8px;">
+                <button
+                    class="button button-secondary button-small"
+                    type="button"
+                    onclick="goToAlertPage(${page - 1})"
+                    ${page <= 1 ? "disabled" : ""}
+                >
+                    Previous
+                </button>
+
+                <span style="font-size:12px;font-weight:600;">
+                    Page ${page} of ${totalPages}
+                </span>
+
+                <button
+                    class="button button-secondary button-small"
+                    type="button"
+                    onclick="goToAlertPage(${page + 1})"
+                    ${page >= totalPages ? "disabled" : ""}
+                >
+                    Next
+                </button>
+            </div>
+        `;
+    }
+
+
+    function goToAlertPage(page) {
+        const target = Number(page);
+
+        if (!Number.isFinite(target) || target < 1) {
+            return;
+        }
+
+        currentPage = target;
+        loadAlerts();
+    }
+
+
+    window.resetAlertPage = resetAlertPage;
+    window.goToAlertPage = goToAlertPage;
+
+
+
     async function loadAlertSummary() {
 
         try {
 
             const response = await fetch(
-                "/api/alerts?limit=1000"
+                "/api/alerts?limit=1"
             );
 
             if (!response.ok) {
@@ -824,60 +999,22 @@
             }
 
             const data = await response.json();
+            const counts = data.status_counts || {};
 
-            const alerts = data.alerts || [];
-
-
-            const counts = {
-                pending: 0,
-                sent: 0,
-                failed: 0
-            };
-
-
-            alerts.forEach(function (alert) {
-
-                const status = safeText(
-                    alert.status
-                ).toLowerCase();
-
-                if (
-                    Object.prototype.hasOwnProperty.call(
-                        counts,
-                        status
-                    )
-                ) {
-                    counts[status] += 1;
-                }
-            });
-
-
-            const pendingElement = document.getElementById(
-                "pending-count"
-            );
-
-            const sentElement = document.getElementById(
-                "sent-count"
-            );
-
-            const failedElement = document.getElementById(
-                "failed-count"
-            );
-
+            const pendingElement = document.getElementById("pending-count");
+            const sentElement = document.getElementById("sent-count");
+            const failedElement = document.getElementById("failed-count");
 
             if (pendingElement) {
-                pendingElement.textContent =
-                    counts.pending;
+                pendingElement.textContent = Number(counts.pending || 0);
             }
 
             if (sentElement) {
-                sentElement.textContent =
-                    counts.sent;
+                sentElement.textContent = Number(counts.sent || 0);
             }
 
             if (failedElement) {
-                failedElement.textContent =
-                    counts.failed;
+                failedElement.textContent = Number(counts.failed || 0);
             }
 
         } catch (error) {
@@ -889,6 +1026,7 @@
 
         }
     }
+
 
 
     async function loadTelegramStatus() {
@@ -951,6 +1089,8 @@
                 data.alerts || []
             );
 
+            renderAlertPagination(data);
+
         } catch (error) {
 
             console.error(
@@ -969,6 +1109,197 @@
             loadAlertSummary(),
             loadTelegramStatus()
         ]);
+    };
+
+
+    window.toggleAllAlerts = function (checked) {
+        document
+            .querySelectorAll(".alert-select")
+            .forEach(function (checkbox) {
+                checkbox.checked = checked;
+            });
+
+        updateAlertSelectionState();
+    };
+
+
+    function updateAlertSelectionState() {
+
+        const checkboxes = Array.from(
+            document.querySelectorAll(".alert-select")
+        );
+
+        const selected = checkboxes.filter(
+            checkbox => checkbox.checked
+        );
+
+        const button = document.getElementById(
+            "delete-selected-alerts-button"
+        );
+
+        if (button) {
+            button.disabled = selected.length === 0;
+            button.textContent =
+                selected.length > 0
+                    ? `Delete selected (${selected.length})`
+                    : "Delete selected";
+        }
+
+        const summary = document.getElementById(
+            "alerts-selection-summary"
+        );
+
+        if (summary) {
+            summary.textContent =
+                selected.length > 0
+                    ? `${selected.length} alert${selected.length === 1 ? "" : "s"} selected.`
+                    : "No alerts selected.";
+        }
+
+        const selectAll = document.getElementById(
+            "select-all-alerts"
+        );
+
+        if (selectAll) {
+            selectAll.checked =
+                checkboxes.length > 0 &&
+                selected.length === checkboxes.length;
+
+            selectAll.indeterminate =
+                selected.length > 0 &&
+                selected.length < checkboxes.length;
+        }
+    }
+
+
+    window.updateAlertSelectionState = updateAlertSelectionState;
+
+
+    window.deleteAlert = async function (alertId) {
+
+        if (!window.confirm("Delete this alert history record?")) {
+            return;
+        }
+
+        try {
+
+            const response = await fetch(
+                "/api/alerts/" + encodeURIComponent(alertId),
+                { method: "DELETE" }
+            );
+
+            if (!response.ok) {
+                const payload = await response.json().catch(
+                    () => ({})
+                );
+
+                throw new Error(
+                    payload.detail ||
+                    "Could not delete the alert."
+                );
+            }
+
+            if (typeof showNotification === "function") {
+                showNotification("Alert deleted.", "success");
+            }
+
+            await loadAlerts();
+
+        } catch (error) {
+
+            if (typeof showNotification === "function") {
+                showNotification(
+                    error.message || "Could not delete the alert.",
+                    "error"
+                );
+            } else {
+                alert(
+                    error.message || "Could not delete the alert."
+                );
+            }
+        }
+    };
+
+
+    window.deleteSelectedAlerts = async function () {
+
+        const ids = Array.from(
+            document.querySelectorAll(".alert-select:checked")
+        ).map(
+            checkbox => Number(checkbox.value)
+        );
+
+        if (ids.length === 0) {
+            return;
+        }
+
+        if (!window.confirm(
+            `Delete ${ids.length} selected alert${ids.length === 1 ? "" : "s"}?`
+        )) {
+            return;
+        }
+
+        const button = document.getElementById(
+            "delete-selected-alerts-button"
+        );
+
+        if (button) {
+            button.disabled = true;
+            button.textContent = "Deleting...";
+        }
+
+        try {
+
+            const response = await fetch(
+                "/api/alerts/delete",
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({ids: ids})
+                }
+            );
+
+            if (!response.ok) {
+                const payload = await response.json().catch(
+                    () => ({})
+                );
+
+                throw new Error(
+                    payload.detail ||
+                    "Could not delete selected alerts."
+                );
+            }
+
+            const payload = await response.json();
+
+            if (typeof showNotification === "function") {
+                showNotification(
+                    `${payload.deleted || 0} alert(s) deleted.`,
+                    "success"
+                );
+            }
+
+            await loadAlerts();
+
+        } catch (error) {
+
+            if (typeof showNotification === "function") {
+                showNotification(
+                    error.message ||
+                    "Could not delete selected alerts.",
+                    "error"
+                );
+            } else {
+                alert(
+                    error.message ||
+                    "Could not delete selected alerts."
+                );
+            }
+
+            updateAlertSelectionState();
+        }
     };
 
 

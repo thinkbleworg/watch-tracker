@@ -427,3 +427,77 @@ def test_repeat_alert_uses_persisted_settings_over_environment_defaults(tmp_path
     assert result.alerts_created == 1
     assert db.get_alerts()[0]["alert_type"] == "repeat"
 
+
+
+
+def test_new_tracked_watch_alerts_during_first_catalogue_seed(tmp_path):
+    db = Database(str(tmp_path / "test.db"))
+    tracker = Tracker(
+        db,
+        tracker_config=make_tracker_config(),
+    )
+
+    rule = TrackingRule(
+        id="rule-gandaberunda",
+        name="Gandaberunda",
+        include_keywords=["Gandaberunda"],
+    )
+    db.save_tracking_rule(rule)
+
+    result = SourceRunResult(source="hmt.store")
+
+    watch = Watch.create(
+        id="watch-gandaberunda",
+        source="hmt.store",
+        name="HMT Men Gandaberunda",
+        product_url="https://example.com/gandaberunda",
+        in_stock=True,
+        stock_count=5,
+    )
+
+    tracker._process_watch(
+        watch,
+        is_new=True,
+        rules=[rule],
+        seed_only=True,
+        result=result,
+        alert_callback=None,
+    )
+
+    alerts = db.get_alerts()
+
+    assert result.alerts_created == 1
+    assert len(alerts) == 1
+    assert alerts[0]["name"] == "HMT Men Gandaberunda"
+    assert alerts[0]["alert_type"] == "new"
+
+
+def test_deleting_alert_does_not_change_last_available_or_alert_state(tmp_path):
+    db = Database(str(tmp_path / "test.db"))
+    watch = make_watch(watch_id="watch-1", in_stock=True)
+
+    db.save_watch(watch)
+    db.record_stock_event(
+        watch,
+        observed_at="2026-01-01T10:00:00+00:00",
+    )
+
+    alert_id = db.create_alert(
+        watch=watch,
+        alert_type="tracked",
+        status="sent",
+    )
+
+    state = AlertState(watch_id="watch-1")
+    state.record_alert()
+    db.save_alert_state(state)
+
+    before = db.get_watch_history_summary("watch-1")
+    assert before["last_available_at"] == "2026-01-01T10:00:00+00:00"
+    assert before["alert_count"] == 1
+
+    assert db.delete_alert(alert_id) is True
+
+    after = db.get_watch_history_summary("watch-1")
+    assert after["last_available_at"] == before["last_available_at"]
+    assert db.get_alert_state("watch-1").last_alerted_at == state.last_alerted_at

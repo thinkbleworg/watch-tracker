@@ -525,20 +525,12 @@ class Tracker:
                 watch
             )
 
-            # First run is catalogue seeding only.
-            if seed_only and self.config.seed_catalogue_silently:
-                logger.debug(
-                    "Seeded %s silently.",
-                    watch.id,
-                )
-
-                return
-
             should_alert = (
                 self.config.alert_new_products_only
                 and self.config.alert_only_when_in_stock
                 and watch.in_stock
             )
+            alert_type = "new"
 
         else:
             existing = self.db.get_watch(
@@ -601,12 +593,32 @@ class Tracker:
         ]
 
         if not matching_rules:
-            logger.debug(
-                "Watch %s does not match any enabled tracking rule.",
-                watch.id,
-            )
+            # First-run catalogue seeding remains silent for untracked
+            # watches, but a newly discovered watch that already matches
+            # an enabled tracking rule must still generate its alert.
+            if is_new and seed_only and self.config.seed_catalogue_silently:
+                logger.debug(
+                    "Seeded untracked watch %s silently.",
+                    watch.id,
+                )
+
+            else:
+                logger.debug(
+                    "Watch %s does not match any enabled tracking rule.",
+                    watch.id,
+                )
 
             return
+
+        # A newly discovered tracked watch is an alertable event even
+        # during the first catalogue seed. This prevents a tracked model
+        # from being silently skipped just because it did not exist in
+        # the catalogue before this scrape.
+        if is_new and seed_only and self.config.seed_catalogue_silently:
+            logger.info(
+                "New tracked watch %s found during catalogue seed; alerting.",
+                watch.name,
+            )
 
         # A watch that remains in stock is normally ignored after its
         # initial/back-in-stock alert. If repeat alerts are enabled, create

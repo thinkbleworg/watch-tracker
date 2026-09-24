@@ -834,8 +834,9 @@ class Database:
         *,
         status: str | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
-        """Return recent alert history for the UI."""
+        """Return alert history for the UI, newest first."""
 
         query = """
             SELECT *
@@ -849,16 +850,86 @@ class Database:
             parameters.append(status)
 
         query += """
-            ORDER BY created_at DESC
-            LIMIT ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ? OFFSET ?
         """
 
-        parameters.append(limit)
+        parameters.extend([limit, offset])
 
         with self.connection() as db:
             rows = db.execute(query, parameters).fetchall()
 
         return [dict(row) for row in rows]
+
+    def count_alerts(
+        self,
+        *,
+        status: str | None = None,
+    ) -> int:
+        """Return the total number of alert records matching a filter."""
+
+        query = "SELECT COUNT(*) AS count FROM alerts"
+        parameters: list[Any] = []
+
+        if status:
+            query += " WHERE status = ?"
+            parameters.append(status)
+
+        with self.connection() as db:
+            row = db.execute(query, parameters).fetchone()
+
+        return int(row["count"] if row else 0)
+
+    def get_alert_status_counts(self) -> dict[str, int]:
+        """Return alert counts grouped by delivery status."""
+
+        with self.connection() as db:
+            rows = db.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM alerts
+                GROUP BY status
+                """
+            ).fetchall()
+
+        return {
+            str(row["status"]): int(row["count"])
+            for row in rows
+        }
+
+    def delete_alert(self, alert_id: int) -> bool:
+        """Delete one alert history record.
+
+        This deliberately does not touch alert_states or stock_events.
+        Deleting alert history must never change repeat-alert timing or
+        last-available stock history.
+        """
+
+        with self.connection() as db:
+            cursor = db.execute(
+                "DELETE FROM alerts WHERE id = ?",
+                (int(alert_id),),
+            )
+
+        return cursor.rowcount > 0
+
+    def delete_alerts(self, alert_ids: list[int]) -> int:
+        """Delete multiple alert history records without touching state/history."""
+
+        ids = sorted({int(alert_id) for alert_id in alert_ids})
+
+        if not ids:
+            return 0
+
+        placeholders = ",".join("?" for _ in ids)
+
+        with self.connection() as db:
+            cursor = db.execute(
+                f"DELETE FROM alerts WHERE id IN ({placeholders})",
+                ids,
+            )
+
+        return int(cursor.rowcount)
 
     # ------------------------------------------------------------------
     # Stock availability history

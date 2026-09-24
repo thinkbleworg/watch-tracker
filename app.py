@@ -751,24 +751,68 @@ def api_delete_tracking_rule(
 @app.get("/api/alerts")
 def api_alerts(
     status: str | None = None,
-    limit: int = Query(
-        default=100,
-        ge=1,
-        le=1000,
-    ),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=25, ge=1, le=100),
 ) -> dict[str, Any]:
-    """
-    Return alert history.
-    """
+    """Return paginated alert history."""
+    total = db.count_alerts(status=status)
+    offset = (page - 1) * limit
+
     alerts = db.get_alerts(
         status=status,
         limit=limit,
+        offset=offset,
     )
+
+    total_pages = (total + limit - 1) // limit if total else 1
 
     return {
         "count": len(alerts),
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "total_pages": total_pages,
+        "status_counts": db.get_alert_status_counts(),
         "alerts": alerts,
     }
+
+
+@app.delete("/api/alerts/{alert_id}")
+def api_delete_alert(alert_id: int) -> dict[str, Any]:
+    """Delete one alert record without changing stock history or alert state."""
+    if not db.delete_alert(alert_id):
+        raise HTTPException(status_code=404, detail="Alert not found.")
+
+    return {"deleted": 1, "alert_id": alert_id}
+
+
+@app.post("/api/alerts/delete")
+def api_delete_alerts(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Bulk-delete alert records without changing stock history or alert state."""
+    raw_ids = payload.get("ids")
+
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="ids must be a non-empty list.",
+        )
+
+    try:
+        alert_ids = [int(value) for value in raw_ids]
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="ids must contain only integers.",
+        ) from exc
+
+    if len(alert_ids) > 500:
+        raise HTTPException(
+            status_code=400,
+            detail="A maximum of 500 alerts can be deleted at once.",
+        )
+
+    return {"deleted": db.delete_alerts(alert_ids)}
+
 
 
 @app.get("/api/alerts/pending/count")

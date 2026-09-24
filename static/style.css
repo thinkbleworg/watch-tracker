@@ -583,11 +583,14 @@ a {
 }
 
 .watch-name {
-    overflow: hidden;
+    overflow: visible;
+    min-width: 0;
     font-size: 13px;
     font-weight: 650;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: normal;
 }
 
 .watch-model {
@@ -643,11 +646,13 @@ a {
 }
 
 .alert-name {
-    overflow: hidden;
+    overflow: visible;
+    min-width: 0;
     font-size: 13px;
     font-weight: 600;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 .alert-meta {
