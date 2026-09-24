@@ -100,7 +100,7 @@ class TrackerConfig:
             SourceConfig(
                 name="hmt.store",
                 enabled=True,
-                base_url="https://hmtwatches.store",
+                base_url="https://www.hmtwatches.store",
             ),
         )
     )
@@ -194,7 +194,7 @@ def load_config() -> TrackerConfig:
             enabled=_env_bool("HMT_STORE_ENABLED", True),
             base_url=os.getenv(
                 "HMT_STORE_BASE_URL",
-                "https://hmtwatches.store",
+                "https://www.hmtwatches.store",
             ).rstrip("/"),
             timeout_seconds=_env_int(
                 "HMT_STORE_TIMEOUT_SECONDS",

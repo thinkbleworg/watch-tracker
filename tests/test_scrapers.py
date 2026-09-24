@@ -3,7 +3,7 @@ from scrapers.hmt_store import HMTStoreScraper
 
 def make_scraper():
     return HMTStoreScraper(
-        base_url="https://hmtwatches.store"
+        base_url="https://www.hmtwatches.store"
     )
 
 

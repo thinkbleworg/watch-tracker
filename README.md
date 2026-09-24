@@ -3,7 +3,7 @@
 A Python-based HMT watch availability tracker that monitors:
 
 - https://hmtwatches.in
-- https://hmtwatches.store
+- https://www.hmtwatches.store
 
 The tracker maintains a persistent catalogue, checks stock periodically,
 and can send Telegram notifications for newly discovered watches.
