@@ -285,10 +285,16 @@ class TelegramNotifier:
         name = html.escape(str(watch.name or "Unknown watch"))
         source = html.escape(self._source_label(watch.source))
 
-        heading = (
-            "⌚ <b>HMT Tracker Alert</b>"
-            if alert_type == "tracked"
-            else "⌚ <b>New HMT Watch Found</b>"
+        heading_by_type = {
+            "tracked": "⌚ <b>HMT Tracker Alert</b>",
+            "new": "⌚ <b>New HMT Watch Found</b>",
+            "back_in_stock": "⌚ <b>HMT Back in Stock</b>",
+            "repeat": "⌚ <b>HMT Still Available</b>",
+        }
+
+        heading = heading_by_type.get(
+            alert_type,
+            "⌚ <b>HMT Watch Alert</b>",
         )
 
         lines = [

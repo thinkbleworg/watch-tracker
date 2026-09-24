@@ -133,6 +133,10 @@ class TrackerConfig:
     # Price changes are catalogue changes, not Telegram alerts.
     alert_price_changes: bool = False
 
+    # Repeat alerts while a tracked watch remains in stock.
+    alert_repeat_enabled: bool = False
+    alert_repeat_interval_minutes: int = 10
+
     # ------------------------------------------------------------------
     # Store API
     # ------------------------------------------------------------------
@@ -257,6 +261,16 @@ def load_config() -> TrackerConfig:
         alert_price_changes=_env_bool(
             "ALERT_PRICE_CHANGES",
             False,
+        ),
+
+        alert_repeat_enabled=_env_bool(
+            "ALERT_REPEAT_ENABLED",
+            False,
+        ),
+
+        alert_repeat_interval_minutes=_env_int(
+            "ALERT_REPEAT_INTERVAL_MINUTES",
+            10,
         ),
 
         store_shop_id=_env_int(

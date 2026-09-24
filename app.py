@@ -562,6 +562,45 @@ def api_watches(
     }
 
 
+@app.get("/api/watch-history")
+def api_watch_history(
+    search: str = Query(
+        default="",
+        max_length=200,
+    ),
+    limit: int = Query(
+        default=50,
+        ge=1,
+        le=200,
+    ),
+) -> dict[str, Any]:
+    """
+    Return availability and alert history for watches matching a model/name
+    search. This is useful when one model exists at multiple sources.
+    """
+    watches = db.get_watches(
+        search=search.strip() or None,
+        limit=limit,
+        offset=0,
+    )
+
+    items: list[dict[str, Any]] = []
+
+    for watch in watches:
+        history = db.get_watch_history_summary(watch.id)
+        items.append(
+            {
+                **watch.to_dict(),
+                **history,
+            }
+        )
+
+    return {
+        "count": len(items),
+        "watches": items,
+    }
+
+
 @app.get("/api/watches/{watch_id:path}")
 def api_watch(
     watch_id: str,
@@ -579,7 +618,10 @@ def api_watch(
             detail="Watch not found",
         )
 
-    return watch.to_dict()
+    return {
+        **watch.to_dict(),
+        **db.get_watch_history_summary(watch.id),
+    }
 
 
 # ---------------------------------------------------------------------------

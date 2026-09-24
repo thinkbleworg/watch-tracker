@@ -814,7 +814,20 @@ function renderWatchCard(
                         View Product
                     </a>
 
+                    <button
+                        type="button"
+                        class="button button-secondary"
+                        onclick='toggleWatchHistory(this, ${JSON.stringify(watch.id)})'
+                    >
+                        History
+                    </button>
+
                 </div>
+
+                <div
+                    class="watch-history"
+                    style="display: none; margin-top: 12px;"
+                ></div>
 
             </div>
 
@@ -822,6 +835,93 @@ function renderWatchCard(
 
     `;
 
+}
+
+
+/* ============================================================
+   Watch history
+   ============================================================ */
+
+async function toggleWatchHistory(
+    button,
+    watchId
+) {
+    const card = button.closest(".watch-card");
+    const panel = card
+        ? card.querySelector(".watch-history")
+        : null;
+
+    if (!panel) {
+        return;
+    }
+
+    if (panel.style.display !== "none") {
+        panel.style.display = "none";
+        button.textContent = "History";
+        return;
+    }
+
+    panel.style.display = "block";
+    panel.innerHTML = '<div class="loading-state">Loading history...</div>';
+    button.disabled = true;
+
+    try {
+        const response = await fetch(
+            `/api/watches/${encodeURIComponent(watchId)}`
+        );
+
+        if (!response.ok) {
+            throw new Error("Unable to load watch history.");
+        }
+
+        const watch = await response.json();
+
+        const lastAvailable =
+            watch.last_available_at
+                ? formatHistoryDate(watch.last_available_at)
+                : "No availability recorded";
+
+        const lastAlerted =
+            watch.last_alerted_at
+                ? formatHistoryDate(watch.last_alerted_at)
+                : "Never";
+
+        panel.innerHTML = `
+            <div class="watch-meta">
+                <strong>Last available:</strong>
+                ${escapeHtml(lastAvailable)}
+            </div>
+            <div class="watch-meta">
+                <strong>Last alerted:</strong>
+                ${escapeHtml(lastAlerted)}
+            </div>
+            <div class="watch-meta">
+                <strong>Total alerts sent:</strong>
+                ${escapeHtml(String(watch.alert_count || 0))}
+            </div>
+        `;
+
+        button.textContent = "Hide History";
+
+    } catch (error) {
+        panel.innerHTML =
+            `<div class="error-state">${escapeHtml(error.message)}</div>`;
+    } finally {
+        button.disabled = false;
+    }
+}
+
+
+function formatHistoryDate(
+    value
+) {
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return value;
+    }
+
+    return date.toLocaleString();
 }
 
 

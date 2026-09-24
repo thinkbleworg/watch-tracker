@@ -174,6 +174,45 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_alerts_created
                     ON alerts(created_at);
 
+                CREATE TABLE IF NOT EXISTS stock_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    watch_id TEXT NOT NULL,
+                    in_stock INTEGER NOT NULL,
+                    stock_count INTEGER,
+                    observed_at TEXT NOT NULL,
+
+                    FOREIGN KEY(watch_id)
+                        REFERENCES watches(id)
+                        ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_stock_events_watch
+                    ON stock_events(watch_id, observed_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_stock_events_available
+                    ON stock_events(watch_id, in_stock, observed_at DESC);
+
+                -- Existing databases predate stock_events. Seed one
+                -- baseline observation per watch so history is immediately
+                -- useful after upgrading.
+                INSERT INTO stock_events (
+                    watch_id,
+                    in_stock,
+                    stock_count,
+                    observed_at
+                )
+                SELECT
+                    w.id,
+                    w.in_stock,
+                    w.stock_count,
+                    w.last_stock_check
+                FROM watches AS w
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM stock_events AS se
+                    WHERE se.watch_id = w.id
+                );
+
                 CREATE TABLE IF NOT EXISTS scrape_runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
 
@@ -814,6 +853,123 @@ class Database:
             rows = db.execute(query, parameters).fetchall()
 
         return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Stock availability history
+    # ------------------------------------------------------------------
+
+    def record_stock_event(
+        self,
+        watch: Watch,
+        *,
+        observed_at: str | None = None,
+    ) -> None:
+        """Record a stock-state transition for a watch."""
+        timestamp = observed_at or watch.last_stock_check or utc_now()
+
+        with self.connection() as db:
+            db.execute(
+                """
+                INSERT INTO stock_events (
+                    watch_id,
+                    in_stock,
+                    stock_count,
+                    observed_at
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    watch.id,
+                    int(watch.in_stock),
+                    watch.stock_count,
+                    timestamp,
+                ),
+            )
+
+    def get_stock_events(
+        self,
+        watch_id: str,
+        *,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return stock-state changes for a watch, newest first."""
+        with self.connection() as db:
+            rows = db.execute(
+                """
+                SELECT id, watch_id, in_stock, stock_count, observed_at
+                FROM stock_events
+                WHERE watch_id = ?
+                ORDER BY observed_at DESC, id DESC
+                LIMIT ?
+                """,
+                (watch_id, limit),
+            ).fetchall()
+
+        return [dict(row) for row in rows]
+
+    def get_last_stock_event(
+        self,
+        watch_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the newest stock-state event for a watch."""
+        with self.connection() as db:
+            row = db.execute(
+                """
+                SELECT id, watch_id, in_stock, stock_count, observed_at
+                FROM stock_events
+                WHERE watch_id = ?
+                ORDER BY observed_at DESC, id DESC
+                LIMIT 1
+                """,
+                (watch_id,),
+            ).fetchone()
+
+        return dict(row) if row else None
+
+    def get_watch_history_summary(
+        self,
+        watch_id: str,
+    ) -> dict[str, Any]:
+        """Return availability and alert history summary for one watch."""
+        with self.connection() as db:
+            last_available = db.execute(
+                """
+                SELECT observed_at
+                FROM stock_events
+                WHERE watch_id = ? AND in_stock = 1
+                ORDER BY observed_at DESC, id DESC
+                LIMIT 1
+                """,
+                (watch_id,),
+            ).fetchone()
+
+            last_alerted = db.execute(
+                """
+                SELECT MAX(COALESCE(sent_at, created_at)) AS last_alerted_at
+                FROM alerts
+                WHERE watch_id = ? AND status = 'sent'
+                """,
+                (watch_id,),
+            ).fetchone()
+
+            alert_count = db.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM alerts
+                WHERE watch_id = ? AND status = 'sent'
+                """,
+                (watch_id,),
+            ).fetchone()
+
+        return {
+            "last_available_at": (
+                last_available["observed_at"] if last_available else None
+            ),
+            "last_alerted_at": (
+                last_alerted["last_alerted_at"] if last_alerted else None
+            ),
+            "alert_count": int(alert_count["count"] if alert_count else 0),
+        }
 
     # ------------------------------------------------------------------
     # Scrape runs
