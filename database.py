@@ -174,6 +174,12 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_alerts_created
                     ON alerts(created_at);
 
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS stock_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     watch_id TEXT NOT NULL,
@@ -1344,3 +1350,51 @@ class Database:
             return json.loads(value)
         except (TypeError, json.JSONDecodeError):
             return None
+
+    # ------------------------------------------------------------------
+    # Application settings
+    # ------------------------------------------------------------------
+
+    def get_setting(self, key: str, default: str | None = None) -> str | None:
+        """Return a persisted application setting, or the supplied default."""
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT value FROM app_settings WHERE key = ?",
+                (key,),
+            ).fetchone()
+
+        if row is None:
+            return default
+
+        return str(row["value"])
+
+    def set_setting(self, key: str, value: str) -> None:
+        """Persist an application setting."""
+        with self.connection() as db:
+            db.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (key, str(value), utc_now()),
+            )
+
+    def get_settings(self, keys: list[str] | None = None) -> dict[str, str]:
+        """Return persisted application settings, optionally limited to keys."""
+        with self.connection() as db:
+            if keys:
+                placeholders = ",".join("?" for _ in keys)
+                rows = db.execute(
+                    f"SELECT key, value FROM app_settings WHERE key IN ({placeholders})",
+                    tuple(keys),
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT key, value FROM app_settings"
+                ).fetchall()
+
+        return {str(row["key"]): str(row["value"]) for row in rows}
+

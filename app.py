@@ -977,6 +977,25 @@ def api_disable_source(
 # Configuration
 # ---------------------------------------------------------------------------
 
+def _get_repeat_enabled() -> bool:
+    value = db.get_setting(
+        "alert_repeat_enabled",
+        str(config.alert_repeat_enabled).lower(),
+    )
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _get_repeat_interval_minutes() -> int:
+    value = db.get_setting(
+        "alert_repeat_interval_minutes",
+        str(config.alert_repeat_interval_minutes),
+    )
+    try:
+        return max(1, min(10080, int(value)))
+    except (TypeError, ValueError):
+        return max(1, min(10080, int(config.alert_repeat_interval_minutes)))
+
+
 @app.get("/api/config")
 def api_config() -> dict[str, Any]:
     """
@@ -1016,6 +1035,8 @@ def api_config() -> dict[str, Any]:
             "price_changes": (
                 config.alert_price_changes
             ),
+            "repeat_enabled": _get_repeat_enabled(),
+            "repeat_interval_minutes": _get_repeat_interval_minutes(),
         },
         "telegram": {
             "configured": telegram.enabled,
@@ -1031,6 +1052,41 @@ def api_config() -> dict[str, Any]:
             }
             for source in config.sources
         ],
+    }
+
+
+@app.put("/api/settings/repeat-alerts")
+def update_repeat_alert_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Update repeat-alert settings persisted in SQLite."""
+    enabled = payload.get("enabled")
+    interval = payload.get("interval_minutes")
+
+    if not isinstance(enabled, bool):
+        raise HTTPException(
+            status_code=400,
+            detail="enabled must be a boolean.",
+        )
+
+    try:
+        interval_minutes = int(interval)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail="interval_minutes must be an integer.",
+        )
+
+    if not 1 <= interval_minutes <= 10080:
+        raise HTTPException(
+            status_code=400,
+            detail="interval_minutes must be between 1 and 10080 minutes.",
+        )
+
+    db.set_setting("alert_repeat_enabled", str(enabled).lower())
+    db.set_setting("alert_repeat_interval_minutes", str(interval_minutes))
+
+    return {
+        "enabled": enabled,
+        "interval_minutes": interval_minutes,
     }
 
 

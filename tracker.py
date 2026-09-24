@@ -455,13 +455,24 @@ class Tracker:
         or pending alert cannot start the repeat timer.
         """
 
-        if not self.config.alert_repeat_enabled:
-            return False
-
         if not watch.in_stock:
             return False
 
-        interval_minutes = max(1, int(self.config.alert_repeat_interval_minutes))
+        enabled_value = self.db.get_setting(
+            "alert_repeat_enabled",
+            str(self.config.alert_repeat_enabled).lower(),
+        )
+        if enabled_value.strip().lower() not in {"1", "true", "yes", "on"}:
+            return False
+
+        interval_value = self.db.get_setting(
+            "alert_repeat_interval_minutes",
+            str(self.config.alert_repeat_interval_minutes),
+        )
+        try:
+            interval_minutes = max(1, int(interval_value))
+        except (TypeError, ValueError):
+            interval_minutes = max(1, int(self.config.alert_repeat_interval_minutes))
         state = self.db.get_alert_state(watch.id)
 
         if state is None or not state.last_alerted_at:

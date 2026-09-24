@@ -57,13 +57,17 @@ A Telegram alert can be generated when:
 3. the watch matches at least one enabled tracking rule.
 
 A watch that remains in stock on later runs does not generate another
-notification.
+notification unless repeated alerts are enabled in Settings.
 
 By default the following are disabled:
 
 - back-in-stock alerts
+- repeated in-stock alerts
 - out-of-stock alerts
 - price-change alerts
+
+Repeated in-stock alerts can be enabled from the Settings page and the
+interval can be changed without editing environment variables.
 
 ---
 

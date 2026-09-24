@@ -378,3 +378,52 @@ def test_repeat_alert_stops_when_watch_is_out_of_stock(tmp_path):
 
     assert result.alerts_created == 0
     assert db.get_alerts() == []
+
+def test_repeat_alert_settings_can_be_persisted(tmp_path):
+    db = Database(str(tmp_path / "test.db"))
+
+    assert db.get_setting("alert_repeat_enabled") is None
+
+    db.set_setting("alert_repeat_enabled", "true")
+    db.set_setting("alert_repeat_interval_minutes", "25")
+
+    assert db.get_setting("alert_repeat_enabled") == "true"
+    assert db.get_setting("alert_repeat_interval_minutes") == "25"
+
+
+def test_repeat_alert_uses_persisted_settings_over_environment_defaults(tmp_path):
+    db = Database(str(tmp_path / "test.db"))
+    tracker = Tracker(db, tracker_config=make_tracker_config())
+
+    db.save_watch(make_watch(watch_id="watch-1", in_stock=True))
+    state = AlertState(watch_id="watch-1")
+    state.last_alerted_at = (
+        datetime.now(timezone.utc) - timedelta(minutes=11)
+    ).isoformat()
+    state.first_alerted_at = state.last_alerted_at
+    state.alert_count = 1
+    db.save_alert_state(state)
+
+    db.set_setting("alert_repeat_enabled", "false")
+    db.set_setting("alert_repeat_interval_minutes", "1")
+
+    result = process_existing_watch(
+        db,
+        tracker,
+        make_watch(watch_id="watch-1", in_stock=True),
+    )
+
+    assert result.alerts_created == 0
+
+    db.set_setting("alert_repeat_enabled", "true")
+    db.set_setting("alert_repeat_interval_minutes", "10")
+
+    result = process_existing_watch(
+        db,
+        tracker,
+        make_watch(watch_id="watch-1", in_stock=True),
+    )
+
+    assert result.alerts_created == 1
+    assert db.get_alerts()[0]["alert_type"] == "repeat"
+

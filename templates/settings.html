@@ -264,39 +264,79 @@ async function loadTrackerConfig() {
                     grid-template-columns:
                         repeat(auto-fit,minmax(220px,1fr));
                     gap:10px;
+                    margin-bottom:18px;
                 "
             >
 
-                ${settingRow(
-                    "Silent catalogue seed",
-                    alertConfig.seed_silently
-                )}
+                ${settingRow("Silent catalogue seed", alertConfig.seed_silently)}
+                ${settingRow("New products only", alertConfig.new_products_only)}
+                ${settingRow("Only alert when in stock", alertConfig.only_when_in_stock)}
+                ${settingRow("Back in stock", alertConfig.back_in_stock)}
+                ${settingRow("Out of stock", alertConfig.out_of_stock)}
+                ${settingRow("Price changes", alertConfig.price_changes)}
 
-                ${settingRow(
-                    "New products only",
-                    alertConfig.new_products_only
-                )}
+            </div>
 
-                ${settingRow(
-                    "Only alert when in stock",
-                    alertConfig.only_when_in_stock
-                )}
+            <div
+                style="
+                    border:1px solid var(--border-color,#e5e7eb);
+                    border-radius:12px;
+                    padding:18px;
+                "
+            >
+                <div style="font-weight:700;margin-bottom:4px;">
+                    Repeated alerts
+                </div>
+                <div style="color:var(--text-muted,#6b7280);font-size:13px;margin-bottom:16px;">
+                    Send another Telegram alert while a tracked watch remains in stock.
+                    The tracker checks this setting on every run.
+                </div>
 
-                ${settingRow(
-                    "Back in stock",
-                    alertConfig.back_in_stock
-                )}
+                <div
+                    style="
+                        display:flex;
+                        flex-wrap:wrap;
+                        align-items:end;
+                        gap:16px;
+                    "
+                >
+                    <label style="display:flex;align-items:center;gap:9px;font-weight:600;">
+                        <input
+                            id="repeat-alert-enabled"
+                            type="checkbox"
+                            ${alertConfig.repeat_enabled ? "checked" : ""}
+                        >
+                        Enable repeated alerts
+                    </label>
 
-                ${settingRow(
-                    "Out of stock",
-                    alertConfig.out_of_stock
-                )}
+                    <label style="display:flex;flex-direction:column;gap:6px;min-width:180px;">
+                        <span style="font-size:13px;font-weight:600;">
+                            Repeat interval (minutes)
+                        </span>
+                        <input
+                            id="repeat-alert-interval"
+                            class="input"
+                            type="number"
+                            min="1"
+                            max="10080"
+                            step="1"
+                            value="${Number(alertConfig.repeat_interval_minutes || 10)}"
+                        >
+                    </label>
 
-                ${settingRow(
-                    "Price changes",
-                    alertConfig.price_changes
-                )}
+                    <button
+                        class="button button-primary"
+                        type="button"
+                        onclick="saveRepeatAlertSettings()"
+                    >
+                        Save repeat settings
+                    </button>
+                </div>
 
+                <div style="margin-top:12px;color:var(--text-muted,#6b7280);font-size:12px;">
+                    Allowed interval: 1 to 10,080 minutes. The alert is sent on the
+                    first tracker run after the interval has elapsed.
+                </div>
             </div>
         `;
 
@@ -514,6 +554,52 @@ async function toggleSource(
 
             alert(error.message);
         }
+    }
+}
+
+
+async function saveRepeatAlertSettings() {
+    const enabled = document.getElementById("repeat-alert-enabled").checked;
+    const intervalInput = document.getElementById("repeat-alert-interval");
+    const interval = Number(intervalInput.value);
+
+    if (!Number.isInteger(interval) || interval < 1 || interval > 10080) {
+        showNotification(
+            "Repeat interval must be a whole number between 1 and 10080 minutes.",
+            "error"
+        );
+        return;
+    }
+
+    try {
+        const response = await fetch("/api/settings/repeat-alerts", {
+            method: "PUT",
+            headers: {
+                "Accept": "application/json",
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                enabled: enabled,
+                interval_minutes: interval
+            })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.detail || "Could not save repeat-alert settings.");
+        }
+
+        showNotification(
+            enabled
+                ? `Repeated alerts enabled: every ${interval} minute${interval === 1 ? "" : "s"}.`
+                : "Repeated alerts disabled.",
+            "success"
+        );
+
+        await loadTrackerConfig();
+    } catch (error) {
+        showNotification(error.message, "error");
     }
 }
 
