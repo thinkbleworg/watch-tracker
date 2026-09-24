@@ -133,7 +133,7 @@ class TrackerConfig:
     # Price changes are catalogue changes, not Telegram alerts.
     alert_price_changes: bool = False
 
-    # Repeat alerts while a tracked watch remains in stock.
+    # Repeat an alert while a tracked watch remains in stock.
     alert_repeat_enabled: bool = False
     alert_repeat_interval_minutes: int = 10
 

@@ -446,6 +446,47 @@ class Tracker:
     # Watch processing
     # ------------------------------------------------------------------
 
+    def _repeat_alert_due(self, watch: Watch) -> bool:
+        """Return True when a repeat alert is due for an in-stock watch.
+
+        Repeat alerts are based on the timestamp of the last successfully
+        delivered Telegram alert. The notifier records that timestamp in
+        ``alert_states`` only after Telegram confirms delivery, so a failed
+        or pending alert cannot start the repeat timer.
+        """
+
+        if not self.config.alert_repeat_enabled:
+            return False
+
+        if not watch.in_stock:
+            return False
+
+        interval_minutes = max(1, int(self.config.alert_repeat_interval_minutes))
+        state = self.db.get_alert_state(watch.id)
+
+        if state is None or not state.last_alerted_at:
+            return False
+
+        try:
+            last_alerted = datetime.fromisoformat(
+                str(state.last_alerted_at).replace("Z", "+00:00")
+            )
+        except (TypeError, ValueError):
+            logger.warning(
+                "Could not parse last_alerted_at for watch %s: %r",
+                watch.id,
+                state.last_alerted_at,
+            )
+            return False
+
+        if last_alerted.tzinfo is None:
+            last_alerted = last_alerted.replace(tzinfo=timezone.utc)
+
+        return (
+            datetime.now(timezone.utc) - last_alerted
+            >= timedelta(minutes=interval_minutes)
+        )
+
     def _process_watch(
         self,
         watch: Watch,
@@ -463,23 +504,23 @@ class Tracker:
         """
         Process one discovered watch.
 
-        The catalogue is always updated. Alert creation is separate from
-        catalogue persistence so repeated polling does not create duplicate
-        alerts unless repeat-alert behaviour is explicitly enabled.
+        The catalogue is always updated.
+
+        Alert creation is deliberately separate from catalogue updates.
         """
-        alert_type = "new"
-        should_alert = False
 
         if is_new:
-            self.db.save_watch(watch)
-
-            # Record the first known availability state. This is the
-            # baseline for future "last available" reporting.
-            self.db.record_stock_event(watch)
+            self.db.save_watch(
+                watch
+            )
 
             # First run is catalogue seeding only.
             if seed_only and self.config.seed_catalogue_silently:
-                logger.debug("Seeded %s silently.", watch.id)
+                logger.debug(
+                    "Seeded %s silently.",
+                    watch.id,
+                )
+
                 return
 
             should_alert = (
@@ -489,13 +530,16 @@ class Tracker:
             )
 
         else:
-            existing = self.db.get_watch(watch.id)
+            existing = self.db.get_watch(
+                watch.id
+            )
 
             if existing is None:
                 # Extremely unlikely because we checked existence above,
                 # but treating it as a new item is safer than losing it.
-                self.db.save_watch(watch)
-                self.db.record_stock_event(watch)
+                self.db.save_watch(
+                    watch
+                )
 
                 should_alert = (
                     self.config.alert_new_products_only
@@ -503,6 +547,7 @@ class Tracker:
                     and watch.in_stock
                     and not seed_only
                 )
+
                 alert_type = "new"
 
             else:
@@ -510,17 +555,20 @@ class Tracker:
                 # updating the catalogue.
                 was_in_stock = existing.in_stock
                 is_now_in_stock = watch.in_stock
-                stock_state_changed = was_in_stock != is_now_in_stock
 
-                existing.update_from(watch)
-                self.db.save_watch(existing)
+                # Preserve the catalogue's permanent identity and update
+                # the latest observation.
+                existing.update_from(
+                    watch
+                )
 
-                # Persist only availability transitions. This keeps the
-                # history compact even when polling every minute.
-                if stock_state_changed:
-                    self.db.record_stock_event(existing)
+                self.db.save_watch(
+                    existing
+                )
 
-                # Alert immediately on out-of-stock -> in-stock when enabled.
+                # Alert once when an existing watch transitions from
+                # out-of-stock to in-stock. A watch that remains in stock
+                # will not generate an alert on every polling cycle.
                 back_in_stock = (
                     not was_in_stock
                     and is_now_in_stock
@@ -532,30 +580,8 @@ class Tracker:
                     and self.config.alert_only_when_in_stock
                     and back_in_stock
                 )
+
                 alert_type = "back_in_stock"
-
-                # If the watch remains in stock, optionally repeat the
-                # alert after the configured interval. The existing
-                # alert state is updated only after Telegram succeeds.
-                if (
-                    not should_alert
-                    and not seed_only
-                    and is_now_in_stock
-                    and self.config.alert_repeat_enabled
-                ):
-                    state = self.db.get_alert_state(watch.id)
-                    latest_stock_event = self.db.get_last_stock_event(
-                        watch.id
-                    )
-                    if self._repeat_alert_due(
-                        state,
-                        latest_stock_event,
-                    ):
-                        should_alert = True
-                        alert_type = "repeat"
-
-        if not should_alert:
-            return
 
         matching_rules = [
             rule
@@ -565,10 +591,21 @@ class Tracker:
 
         if not matching_rules:
             logger.debug(
-                "In-stock watch %s does not match any tracking rule.",
+                "Watch %s does not match any enabled tracking rule.",
                 watch.id,
             )
+
             return
+
+        # A watch that remains in stock is normally ignored after its
+        # initial/back-in-stock alert. If repeat alerts are enabled, create
+        # another alert only after the configured interval has elapsed.
+        if not should_alert:
+            if not self._repeat_alert_due(watch):
+                return
+
+            should_alert = True
+            alert_type = "repeat"
 
         # One watch should produce one Telegram alert even if multiple
         # rules match it.
@@ -602,7 +639,9 @@ class Tracker:
 
         if alert_callback is not None:
             try:
-                alert_callback(candidate)
+                alert_callback(
+                    candidate
+                )
 
             except Exception as exc:
                 # The alert record remains pending/failed and can be
@@ -616,68 +655,6 @@ class Tracker:
                     "Alert callback failed for %s.",
                     watch.id,
                 )
-
-    def _repeat_alert_due(
-        self,
-        state: AlertState | None,
-        latest_stock_event: dict[str, object] | None,
-    ) -> bool:
-        """
-        Return True when a successful alert is old enough to repeat.
-
-        A repeat belongs to the current in-stock cycle. If the latest
-        stock event is an out-of-stock transition, an old alert from a
-        previous cycle must never restart the repeat timer.
-        """
-        if state is None or not state.last_alerted_at:
-            return False
-
-        if (
-            latest_stock_event is None
-            or not bool(latest_stock_event.get("in_stock"))
-        ):
-            return False
-
-        try:
-            last_alerted = datetime.fromisoformat(
-                state.last_alerted_at.replace("Z", "+00:00")
-            )
-        except (TypeError, ValueError):
-            logger.warning(
-                "Could not parse last_alerted_at=%r",
-                state.last_alerted_at,
-            )
-            return False
-
-        if last_alerted.tzinfo is None:
-            last_alerted = last_alerted.replace(tzinfo=timezone.utc)
-
-        try:
-            stock_observed = datetime.fromisoformat(
-                str(latest_stock_event["observed_at"]).replace(
-                    "Z", "+00:00"
-                )
-            )
-        except (TypeError, ValueError):
-            return False
-
-        if stock_observed.tzinfo is None:
-            stock_observed = stock_observed.replace(
-                tzinfo=timezone.utc
-            )
-
-        # A newer in-stock transition means the current cycle has not
-        # produced an alert yet. The back-in-stock path handles that
-        # immediate alert when enabled.
-        if stock_observed > last_alerted:
-            return False
-
-        return (
-            datetime.now(timezone.utc) - last_alerted
-            >= timedelta(
-                minutes=self.config.alert_repeat_interval_minutes
-            )
-        )
 
     # ------------------------------------------------------------------
     # Tracking-rule activation

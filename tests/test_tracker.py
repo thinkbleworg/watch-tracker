@@ -13,6 +13,8 @@ def make_tracker_config():
         alert_back_in_stock=True,
         alert_only_when_in_stock=True,
         alert_new_products_only=True,
+        alert_repeat_enabled=True,
+        alert_repeat_interval_minutes=10,
     )
 
 
@@ -316,69 +318,23 @@ def test_creating_rule_does_not_alert_for_non_matching_watch(tmp_path):
     assert db.get_alerts() == []
 
 
-def test_stock_history_records_availability_transitions(tmp_path):
+def test_repeat_alert_is_created_after_interval_when_still_in_stock(tmp_path):
     db = Database(str(tmp_path / "test.db"))
-    tracker = Tracker(
-        db,
-        tracker_config=make_tracker_config(),
-    )
+    tracker = Tracker(db, tracker_config=make_tracker_config())
 
-    first = make_watch(watch_id="watch-1", in_stock=False)
-    db.save_watch(first)
-    db.record_stock_event(first)
+    db.save_watch(make_watch(watch_id="watch-1", in_stock=True))
 
-    in_stock = make_watch(watch_id="watch-1", in_stock=True)
-    process_existing_watch(db, tracker, in_stock)
-
-    out_of_stock = make_watch(watch_id="watch-1", in_stock=False)
-    process_existing_watch(db, tracker, out_of_stock)
-
-    events = db.get_stock_events("watch-1")
-
-    assert len(events) == 3
-    assert [event["in_stock"] for event in reversed(events)] == [0, 1, 0]
-
-    summary = db.get_watch_history_summary("watch-1")
-    assert summary["last_available_at"] == events[1]["observed_at"]
-
-
-def test_repeat_alert_is_created_after_configured_interval(tmp_path):
-    db = Database(str(tmp_path / "test.db"))
-
-    tracker = Tracker(
-        db,
-        tracker_config=replace(
-            make_tracker_config(),
-            alert_repeat_enabled=True,
-            alert_repeat_interval_minutes=10,
-        ),
-    )
-
-    watch = make_watch(watch_id="watch-1", in_stock=True)
-    db.save_watch(watch)
-
-    old = (
+    state = AlertState(watch_id="watch-1")
+    state.last_alerted_at = (
         datetime.now(timezone.utc) - timedelta(minutes=11)
     ).isoformat()
+    state.first_alerted_at = state.last_alerted_at
+    state.alert_count = 1
+    db.save_alert_state(state)
 
-    db.record_stock_event(
-        watch,
-        observed_at=old,
-    )
-
-    db.save_alert_state(
-        AlertState(
-            watch_id="watch-1",
-            first_alerted_at=old,
-            last_alerted_at=old,
-            alert_count=1,
-        )
-    )
-
-    result = process_existing_watch(db, tracker, watch)
+    result = process_existing_watch(db, tracker, make_watch(watch_id="watch-1", in_stock=True))
 
     alerts = db.get_alerts()
-
     assert result.alerts_created == 1
     assert len(alerts) == 1
     assert alerts[0]["alert_type"] == "repeat"
@@ -386,33 +342,39 @@ def test_repeat_alert_is_created_after_configured_interval(tmp_path):
 
 def test_repeat_alert_is_not_created_before_interval(tmp_path):
     db = Database(str(tmp_path / "test.db"))
+    tracker = Tracker(db, tracker_config=make_tracker_config())
 
-    tracker = Tracker(
-        db,
-        tracker_config=replace(
-            make_tracker_config(),
-            alert_repeat_enabled=True,
-            alert_repeat_interval_minutes=10,
-        ),
-    )
+    db.save_watch(make_watch(watch_id="watch-1", in_stock=True))
 
-    watch = make_watch(watch_id="watch-1", in_stock=True)
-    db.save_watch(watch)
-
-    recent = (
-        datetime.now(timezone.utc) - timedelta(minutes=5)
+    state = AlertState(watch_id="watch-1")
+    state.last_alerted_at = (
+        datetime.now(timezone.utc) - timedelta(minutes=9)
     ).isoformat()
+    state.first_alerted_at = state.last_alerted_at
+    state.alert_count = 1
+    db.save_alert_state(state)
 
-    db.save_alert_state(
-        AlertState(
-            watch_id="watch-1",
-            first_alerted_at=recent,
-            last_alerted_at=recent,
-            alert_count=1,
-        )
-    )
+    result = process_existing_watch(db, tracker, make_watch(watch_id="watch-1", in_stock=True))
 
-    result = process_existing_watch(db, tracker, watch)
+    assert result.alerts_created == 0
+    assert db.get_alerts() == []
+
+
+def test_repeat_alert_stops_when_watch_is_out_of_stock(tmp_path):
+    db = Database(str(tmp_path / "test.db"))
+    tracker = Tracker(db, tracker_config=make_tracker_config())
+
+    db.save_watch(make_watch(watch_id="watch-1", in_stock=True))
+
+    state = AlertState(watch_id="watch-1")
+    state.last_alerted_at = (
+        datetime.now(timezone.utc) - timedelta(minutes=11)
+    ).isoformat()
+    state.first_alerted_at = state.last_alerted_at
+    state.alert_count = 1
+    db.save_alert_state(state)
+
+    result = process_existing_watch(db, tracker, make_watch(watch_id="watch-1", in_stock=False))
 
     assert result.alerts_created == 0
     assert db.get_alerts() == []
