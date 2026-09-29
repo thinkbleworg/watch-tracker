@@ -163,8 +163,16 @@ class TelegramNotifier:
                 alert_id = int(alert["id"])
 
                 try:
-                    message = self._format_stored_alert(alert)
-                    self._send_message(message)
+                    watch = self.db.get_watch(str(alert["watch_id"]))
+
+                    if watch is not None:
+                        self._send_watch_message(
+                            watch,
+                            alert_type=str(alert.get("alert_type") or "tracked"),
+                        )
+                    else:
+                        message = self._format_stored_alert(alert)
+                        self._send_message(message)
 
                     self.db.mark_alert_sent(alert_id)
 
@@ -238,7 +246,68 @@ class TelegramNotifier:
             )
 
         message = self._format_watch(watch, alert_type=alert_type)
+
+        image_url = getattr(watch, "image_url", None)
+
+        if image_url:
+            try:
+                return self._send_photo(
+                    image_url,
+                    caption=message,
+                )
+            except Exception as exc:
+                # If the image URL is no longer reachable or Telegram
+                # rejects it, fall back to the text alert rather than
+                # losing the notification entirely.
+                logger.warning(
+                    "Telegram photo delivery failed for watch %s; "
+                    "falling back to text alert: %s",
+                    getattr(watch, "id", "unknown"),
+                    exc,
+                )
+
         return self._send_message(message)
+
+    def _send_photo(
+        self,
+        image_url: str,
+        *,
+        caption: str,
+    ) -> dict[str, Any]:
+        if not self.enabled:
+            raise RuntimeError(
+                "Telegram is not configured. "
+                "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."
+            )
+
+        response = self._session.post(
+            f"{self.api_url}/sendPhoto",
+            data={
+                "chat_id": self.chat_id,
+                "photo": str(image_url),
+                "caption": caption,
+                "parse_mode": "HTML",
+            },
+            timeout=self.timeout,
+        )
+
+        response.raise_for_status()
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                "Telegram returned a non-JSON response"
+            ) from exc
+
+        if not payload.get("ok"):
+            description = payload.get(
+                "description",
+                "Telegram API returned an unsuccessful response",
+            )
+            raise RuntimeError(description)
+
+        return payload
 
     def _send_message(self, text: str) -> dict[str, Any]:
         if not self.enabled:
