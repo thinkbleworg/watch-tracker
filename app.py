@@ -1021,7 +1021,8 @@ def api_disable_source(
 
 # ---------------------------------------------------------------------------
 # Configuration
-# -----------------------------------------------def _setting_bool(key: str, default: bool) -> bool:
+# ---------------------------------------------------------------------------
+def _setting_bool(key: str, default: bool) -> bool:
     value = db.get_setting(key, str(default).lower())
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
