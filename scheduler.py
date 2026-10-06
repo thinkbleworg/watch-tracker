@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from datetime import datetime, time as dt_time
+from zoneinfo import ZoneInfo
 from collections.abc import Callable
 from typing import Any
 
@@ -30,9 +32,11 @@ class TrackerScheduler:
         tracker: Tracker,
         *,
         interval_seconds: int | None = None,
+        database=None,
         alert_callback: Callable[[Any], Any] | None = None,
     ) -> None:
         self.tracker = tracker
+        self.database = database
 
         self.interval_seconds = (
             interval_seconds
@@ -174,11 +178,69 @@ class TrackerScheduler:
         return {
             "running": self.running,
             "execution_running": self.execution_running,
-            "interval_seconds": self.interval_seconds,
+            "interval_seconds": self._get_interval_seconds(),
+            "night_mode": self._is_night_mode(),
             "last_run_at": self.last_run_at,
             "last_error": self.last_error,
             "last_result": self._result_to_dict(result),
         }
+
+    def _get_interval_seconds(self) -> int:
+        default = max(1, int(self.interval_seconds))
+        if self.database is None:
+            return default
+
+        value = self.database.get_setting(
+            "scrape_interval_minutes",
+            str(max(1, round(default / 60))),
+        )
+        try:
+            return max(60, min(86400, int(value) * 60))
+        except (TypeError, ValueError):
+            return default
+
+    def _is_night_mode(self) -> bool:
+        if self.database is None:
+            return False
+
+        enabled = self.database.get_setting(
+            "night_mode_enabled",
+            str(config.night_mode_enabled).lower(),
+        )
+        if str(enabled).strip().lower() not in {"1", "true", "yes", "on"}:
+            return False
+
+        start_text = self.database.get_setting(
+            "night_mode_start",
+            config.night_mode_start,
+        )
+        end_text = self.database.get_setting(
+            "night_mode_end",
+            config.night_mode_end,
+        )
+
+        try:
+            start = datetime.strptime(str(start_text), "%H:%M").time()
+            end = datetime.strptime(str(end_text), "%H:%M").time()
+        except ValueError:
+            logger.warning("Invalid night mode time; using configured defaults.")
+            start = datetime.strptime(config.night_mode_start, "%H:%M").time()
+            end = datetime.strptime(config.night_mode_end, "%H:%M").time()
+
+        try:
+            tz_name = self.database.get_setting("app_timezone", config.timezone)
+            now = datetime.now(ZoneInfo(tz_name)).time()
+        except Exception:
+            now = datetime.now().time()
+
+        if start == end:
+            return True
+
+        if start < end:
+            return start <= now < end
+
+        # Cross-midnight window, e.g. 23:30 -> 07:30.
+        return now >= start or now < end
 
     # ------------------------------------------------------------------
     # Background worker
@@ -199,7 +261,21 @@ class TrackerScheduler:
             if run_immediately:
                 self._run_safely("startup")
 
-            while not self._stop_event.wait(self.interval_seconds):
+            while not self._stop_event.is_set():
+                interval = self._get_interval_seconds()
+
+                if self._is_night_mode():
+                    logger.debug("Night-time rest mode active; scheduled scrape skipped.")
+                    self._stop_event.wait(min(60, interval))
+                    continue
+
+                self._stop_event.wait(interval)
+                if self._stop_event.is_set():
+                    break
+
+                if self._is_night_mode():
+                    continue
+
                 self._run_safely("scheduled")
 
         except Exception:

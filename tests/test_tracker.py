@@ -501,3 +501,74 @@ def test_deleting_alert_does_not_change_last_available_or_alert_state(tmp_path):
     after = db.get_watch_history_summary("watch-1")
     assert after["last_available_at"] == before["last_available_at"]
     assert db.get_alert_state("watch-1").last_alerted_at == state.last_alerted_at
+
+
+
+def test_price_change_alert_uses_persisted_setting(tmp_path):
+    db = Database(str(tmp_path / "test.db"))
+    tracker = Tracker(db, tracker_config=make_tracker_config())
+    db.set_setting("alert_price_changes", "true")
+
+    old = make_watch(watch_id="watch-price", in_stock=True)
+    db.save_watch(old)
+
+    latest = make_watch(watch_id="watch-price", in_stock=True)
+    latest.price = 1200
+
+    result = process_existing_watch(db, tracker, latest)
+    alerts = db.get_alerts()
+
+    assert result.alerts_created == 1
+    assert alerts[0]["alert_type"] == "price_changed"
+    assert alerts[0]["price"] == 1200
+
+
+def test_out_of_stock_alert_uses_persisted_setting(tmp_path):
+    db = Database(str(tmp_path / "test.db"))
+    tracker = Tracker(db, tracker_config=make_tracker_config())
+    db.set_setting("alert_out_of_stock", "true")
+
+    db.save_watch(make_watch(watch_id="watch-stock", in_stock=True))
+    latest = make_watch(watch_id="watch-stock", in_stock=False)
+
+    result = process_existing_watch(db, tracker, latest)
+    alerts = db.get_alerts()
+
+    assert result.alerts_created == 1
+    assert alerts[0]["alert_type"] == "out_of_stock"
+
+
+def test_back_in_stock_can_be_disabled_independently(tmp_path):
+    db = Database(str(tmp_path / "test.db"))
+    tracker = Tracker(db, tracker_config=make_tracker_config())
+    db.set_setting("alert_back_in_stock", "false")
+
+    db.save_watch(make_watch(watch_id="watch-back", in_stock=False))
+    latest = make_watch(watch_id="watch-back", in_stock=True)
+
+    result = process_existing_watch(db, tracker, latest)
+
+    assert result.alerts_created == 0
+    assert db.get_alerts() == []
+
+
+def test_new_watch_alert_can_be_disabled_independently(tmp_path):
+    db = Database(str(tmp_path / "test.db"))
+    tracker = Tracker(db, tracker_config=make_tracker_config())
+    db.set_setting("alert_new_products", "false")
+
+    rule = make_matching_rule()
+    result = SourceRunResult(source="hmt.store")
+    watch = make_watch(watch_id="watch-new-disabled", in_stock=True)
+
+    tracker._process_watch(
+        watch,
+        is_new=True,
+        rules=[rule],
+        seed_only=False,
+        result=result,
+        alert_callback=None,
+    )
+
+    assert result.alerts_created == 0
+    assert db.get_alerts() == []

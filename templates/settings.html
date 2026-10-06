@@ -164,64 +164,37 @@ async function loadTrackerConfig() {
 
 
         tracker.innerHTML = `
-            <div
-                style="
-                    display:grid;
-                    grid-template-columns:
-                        repeat(auto-fit,minmax(220px,1fr));
-                    gap:16px;
-                "
-            >
-
-                <div class="status-row">
-                    <span class="status-row-label">
-                        Run interval
-                    </span>
-                    <span class="status-row-value">
-                        ${formatInterval(
-                            data.scheduler_interval_seconds
-                        )}
-                    </span>
-                </div>
-
-                <div class="status-row">
-                    <span class="status-row-label">
-                        Startup run
-                    </span>
-                    <span class="status-row-value">
-                        ${
-                            data.scheduler_startup_run
-                                ? "Enabled"
-                                : "Disabled"
-                        }
-                    </span>
-                </div>
-
-                <div class="status-row">
-                    <span class="status-row-label">
-                        HTTP timeout
-                    </span>
-                    <span class="status-row-value">
-                        ${escapeHtml(
-                            data.http_timeout ?? "—"
-                        )} seconds
-                    </span>
-                </div>
-
-                <div class="status-row">
-                    <span class="status-row-label">
-                        HTTP retries
-                    </span>
-                    <span class="status-row-value">
-                        ${escapeHtml(
-                            data.http_retries ?? "—"
-                        )}
-                    </span>
-                </div>
-
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;">
+                <label style="display:flex;flex-direction:column;gap:6px;">
+                    <span style="font-size:13px;font-weight:600;">Run interval (minutes)</span>
+                    <input id="run-interval-minutes" class="input" type="number" min="1" max="1440" step="1"
+                        value="${Math.max(1, Math.round(Number(data.scheduler_interval_seconds || 300) / 60))}">
+                </label>
+                <label style="display:flex;align-items:center;gap:9px;font-weight:600;">
+                    <input id="night-mode-enabled" type="checkbox" ${data.night_mode && data.night_mode.enabled ? "checked" : ""}>
+                    Enable night-time rest
+                </label>
+                <label style="display:flex;flex-direction:column;gap:6px;">
+                    <span style="font-size:13px;font-weight:600;">Night rest starts</span>
+                    <input id="night-mode-start" class="input" type="time" value="${escapeHtml((data.night_mode && data.night_mode.start) || "23:30")}">
+                </label>
+                <label style="display:flex;flex-direction:column;gap:6px;">
+                    <span style="font-size:13px;font-weight:600;">Night rest ends</span>
+                    <input id="night-mode-end" class="input" type="time" value="${escapeHtml((data.night_mode && data.night_mode.end) || "07:30")}">
+                </label>
+                <label style="display:flex;flex-direction:column;gap:6px;">
+                    <span style="font-size:13px;font-weight:600;">Timezone</span>
+                    <input id="app-timezone" class="input" type="text" value="${escapeHtml((data.night_mode && data.night_mode.timezone) || "Asia/Kolkata")}">
+                </label>
+            </div>
+            <div style="margin-top:16px;">
+                <button class="button button-primary" type="button" onclick="saveRuntimeSettings()">Save runtime settings</button>
+            </div>
+            <div style="margin-top:10px;color:var(--text-muted,#6b7280);font-size:12px;">
+                ${data.night_mode && data.night_mode.active ? "Night-time rest is currently active." : "Scheduled scraping is active outside the configured rest period."}
+                Manual Run Now remains available during rest mode.
             </div>
         `;
-
 
         const telegramConfigured =
             data.telegram &&
@@ -258,84 +231,42 @@ async function loadTrackerConfig() {
 
 
         alerts.innerHTML = `
-            <div
-                style="
-                    display:grid;
-                    grid-template-columns:
-                        repeat(auto-fit,minmax(220px,1fr));
-                    gap:10px;
-                    margin-bottom:18px;
-                "
-            >
-
-                ${settingRow("Silent catalogue seed", alertConfig.seed_silently)}
-                ${settingRow("New products only", alertConfig.new_products_only)}
-                ${settingRow("Only alert when in stock", alertConfig.only_when_in_stock)}
-                ${settingRow("Back in stock", alertConfig.back_in_stock)}
-                ${settingRow("Out of stock", alertConfig.out_of_stock)}
-                ${settingRow("Price changes", alertConfig.price_changes)}
-
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:18px;">
+                <label style="display:flex;align-items:center;gap:9px;font-weight:600;">
+                    <input id="alert-new-products" type="checkbox" ${alertConfig.new_products_only ? "checked" : ""}>
+                    New watch
+                </label>
+                <label style="display:flex;align-items:center;gap:9px;font-weight:600;">
+                    <input id="alert-back-in-stock" type="checkbox" ${alertConfig.back_in_stock ? "checked" : ""}>
+                    Back in stock
+                </label>
+                <label style="display:flex;align-items:center;gap:9px;font-weight:600;">
+                    <input id="alert-price-changes" type="checkbox" ${alertConfig.price_changes ? "checked" : ""}>
+                    Price changes
+                </label>
+                <label style="display:flex;align-items:center;gap:9px;font-weight:600;">
+                    <input id="alert-out-of-stock" type="checkbox" ${alertConfig.out_of_stock ? "checked" : ""}>
+                    Out of stock
+                </label>
+                <label style="display:flex;align-items:center;gap:9px;font-weight:600;">
+                    <input id="alert-repeat-enabled" type="checkbox" ${alertConfig.repeat_enabled ? "checked" : ""}>
+                    Repeated alerts
+                </label>
             </div>
 
-            <div
-                style="
-                    border:1px solid var(--border-color,#e5e7eb);
-                    border-radius:12px;
-                    padding:18px;
-                "
-            >
-                <div style="font-weight:700;margin-bottom:4px;">
-                    Repeated alerts
-                </div>
-                <div style="color:var(--text-muted,#6b7280);font-size:13px;margin-bottom:16px;">
-                    Send another Telegram alert while a tracked watch remains in stock.
-                    The tracker checks this setting on every run.
-                </div>
-
-                <div
-                    style="
-                        display:flex;
-                        flex-wrap:wrap;
-                        align-items:end;
-                        gap:16px;
-                    "
-                >
-                    <label style="display:flex;align-items:center;gap:9px;font-weight:600;">
-                        <input
-                            id="repeat-alert-enabled"
-                            type="checkbox"
-                            ${alertConfig.repeat_enabled ? "checked" : ""}
-                        >
-                        Enable repeated alerts
-                    </label>
-
+            <div style="border:1px solid var(--border-color,#e5e7eb);border-radius:12px;padding:18px;">
+                <div style="display:flex;flex-wrap:wrap;align-items:end;gap:16px;">
                     <label style="display:flex;flex-direction:column;gap:6px;min-width:180px;">
-                        <span style="font-size:13px;font-weight:600;">
-                            Repeat interval (minutes)
-                        </span>
-                        <input
-                            id="repeat-alert-interval"
-                            class="input"
-                            type="number"
-                            min="1"
-                            max="10080"
-                            step="1"
-                            value="${Number(alertConfig.repeat_interval_minutes || 10)}"
-                        >
+                        <span style="font-size:13px;font-weight:600;">Repeat interval (minutes)</span>
+                        <input id="repeat-alert-interval" class="input" type="number" min="1" max="10080" step="1"
+                            value="${Number(alertConfig.repeat_interval_minutes || 10)}">
                     </label>
-
-                    <button
-                        class="button button-primary"
-                        type="button"
-                        onclick="saveRepeatAlertSettings()"
-                    >
-                        Save repeat settings
+                    <button class="button button-primary" type="button" onclick="saveAlertSettings()">
+                        Save alert settings
                     </button>
                 </div>
-
                 <div style="margin-top:12px;color:var(--text-muted,#6b7280);font-size:12px;">
-                    Allowed interval: 1 to 10,080 minutes. The alert is sent on the
-                    first tracker run after the interval has elapsed.
+                    Repeated alerts are sent on the first tracker run after the interval has elapsed.
                 </div>
             </div>
         `;
@@ -558,49 +489,75 @@ async function toggleSource(
 }
 
 
-async function saveRepeatAlertSettings() {
-    const enabled = document.getElementById("repeat-alert-enabled").checked;
-    const intervalInput = document.getElementById("repeat-alert-interval");
-    const interval = Number(intervalInput.value);
+async function saveRuntimeSettings() {
+    const interval = Number(document.getElementById("run-interval-minutes").value);
+    const enabled = document.getElementById("night-mode-enabled").checked;
+    const start = document.getElementById("night-mode-start").value;
+    const end = document.getElementById("night-mode-end").value;
+    const timezone = document.getElementById("app-timezone").value.trim();
 
-    if (!Number.isInteger(interval) || interval < 1 || interval > 10080) {
-        showNotification(
-            "Repeat interval must be a whole number between 1 and 10080 minutes.",
-            "error"
-        );
+    if (!Number.isInteger(interval) || interval < 1 || interval > 1440) {
+        showNotification("Run interval must be a whole number between 1 and 1440 minutes.", "error");
         return;
     }
 
     try {
-        const response = await fetch("/api/settings/repeat-alerts", {
+        const response = await fetch("/api/settings/runtime", {
             method: "PUT",
-            headers: {
-                "Accept": "application/json",
-                "Content-Type": "application/json"
-            },
+            headers: {"Accept": "application/json", "Content-Type": "application/json"},
             body: JSON.stringify({
-                enabled: enabled,
-                interval_minutes: interval
+                interval_minutes: interval,
+                night_mode_enabled: enabled,
+                night_mode_start: start,
+                night_mode_end: end,
+                timezone: timezone
             })
         });
-
         const data = await response.json();
-
-        if (!response.ok) {
-            throw new Error(data.detail || "Could not save repeat-alert settings.");
-        }
-
-        showNotification(
-            enabled
-                ? `Repeated alerts enabled: every ${interval} minute${interval === 1 ? "" : "s"}.`
-                : "Repeated alerts disabled.",
-            "success"
-        );
-
+        if (!response.ok) throw new Error(data.detail || "Could not save runtime settings.");
+        showNotification("Runtime settings saved.", "success");
         await loadTrackerConfig();
     } catch (error) {
         showNotification(error.message, "error");
     }
+}
+
+
+async function saveAlertSettings() {
+    const interval = Number(document.getElementById("repeat-alert-interval").value);
+    if (!Number.isInteger(interval) || interval < 1 || interval > 10080) {
+        showNotification("Repeat interval must be a whole number between 1 and 10080 minutes.", "error");
+        return;
+    }
+
+    const payload = {
+        new_products: document.getElementById("alert-new-products").checked,
+        back_in_stock: document.getElementById("alert-back-in-stock").checked,
+        price_changes: document.getElementById("alert-price-changes").checked,
+        out_of_stock: document.getElementById("alert-out-of-stock").checked,
+        repeat_enabled: document.getElementById("alert-repeat-enabled").checked,
+        repeat_interval_minutes: interval
+    };
+
+    try {
+        const response = await fetch("/api/settings/alerts", {
+            method: "PUT",
+            headers: {"Accept": "application/json", "Content-Type": "application/json"},
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Could not save alert settings.");
+        showNotification("Alert settings saved.", "success");
+        await loadTrackerConfig();
+    } catch (error) {
+        showNotification(error.message, "error");
+    }
+}
+
+
+async function saveRepeatAlertSettings() {
+    // Backward-compatible UI helper.
+    await saveAlertSettings();
 }
 
 

@@ -79,6 +79,12 @@ class TrackerConfig:
     scrape_interval_seconds: int = 60
     run_on_startup: bool = True
 
+    # Scheduled scraping rest period.
+    night_mode_enabled: bool = False
+    night_mode_start: str = "23:30"
+    night_mode_end: str = "07:30"
+    timezone: str = "Asia/Kolkata"
+
     # ------------------------------------------------------------------
     # HTTP
     # ------------------------------------------------------------------
@@ -218,6 +224,26 @@ def load_config() -> TrackerConfig:
             "RUN_ON_STARTUP",
             True,
         ),
+
+        night_mode_enabled=_env_bool(
+            "NIGHT_MODE_ENABLED",
+            False,
+        ),
+
+        night_mode_start=os.getenv(
+            "NIGHT_MODE_START",
+            "23:30",
+        ).strip(),
+
+        night_mode_end=os.getenv(
+            "NIGHT_MODE_END",
+            "07:30",
+        ).strip(),
+
+        timezone=os.getenv(
+            "APP_TIMEZONE",
+            "Asia/Kolkata",
+        ).strip(),
 
         request_timeout_seconds=_env_int(
             "REQUEST_TIMEOUT_SECONDS",

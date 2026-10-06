@@ -5,6 +5,7 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
@@ -50,6 +51,7 @@ telegram = TelegramNotifier(
 scheduler = TrackerScheduler(
     tracker,
     interval_seconds=config.scrape_interval_seconds,
+    database=db,
     alert_callback=telegram.send_candidate,
 )
 
@@ -1019,120 +1021,152 @@ def api_disable_source(
 
 # ---------------------------------------------------------------------------
 # Configuration
-# ---------------------------------------------------------------------------
-
-def _get_repeat_enabled() -> bool:
-    value = db.get_setting(
-        "alert_repeat_enabled",
-        str(config.alert_repeat_enabled).lower(),
-    )
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+# -----------------------------------------------def _setting_bool(key: str, default: bool) -> bool:
+    value = db.get_setting(key, str(default).lower())
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _get_repeat_interval_minutes() -> int:
-    value = db.get_setting(
-        "alert_repeat_interval_minutes",
-        str(config.alert_repeat_interval_minutes),
-    )
+def _setting_int(key: str, default: int, minimum: int, maximum: int) -> int:
+    value = db.get_setting(key, str(default))
     try:
-        return max(1, min(10080, int(value)))
+        return max(minimum, min(maximum, int(value)))
     except (TypeError, ValueError):
-        return max(1, min(10080, int(config.alert_repeat_interval_minutes)))
+        return max(minimum, min(maximum, int(default)))
+
+
+def _setting_time(key: str, default: str) -> str:
+    value = str(db.get_setting(key, default) or default)
+    try:
+        datetime.strptime(value, "%H:%M")
+        return value
+    except ValueError:
+        return default
 
 
 @app.get("/api/config")
 def api_config() -> dict[str, Any]:
-    """
-    Return safe, non-secret application configuration.
-
-    Telegram bot token is deliberately never exposed.
-    """
+    """Return safe, non-secret application configuration."""
     return {
-        "scheduler_interval_seconds": (
-            config.scrape_interval_seconds
-        ),
-        "scheduler_startup_run": (
-            config.run_on_startup
-        ),
-        "http_timeout": (
-            config.request_timeout_seconds
-        ),
-        "http_retries": (
-            config.request_retries
-        ),
+        "scheduler_interval_seconds": scheduler.status()["interval_seconds"],
+        "scheduler_startup_run": config.run_on_startup,
+        "http_timeout": config.request_timeout_seconds,
+        "http_retries": config.request_retries,
+        "night_mode": {
+            "enabled": _setting_bool("night_mode_enabled", config.night_mode_enabled),
+            "start": _setting_time("night_mode_start", config.night_mode_start),
+            "end": _setting_time("night_mode_end", config.night_mode_end),
+            "timezone": db.get_setting("app_timezone", config.timezone),
+            "active": scheduler.status().get("night_mode", False),
+        },
         "alerts": {
-            "seed_silently": (
-                config.seed_catalogue_silently
+            "seed_silently": config.seed_catalogue_silently,
+            "new_products_only": _setting_bool("alert_new_products", config.alert_new_products_only),
+            "only_when_in_stock": _setting_bool("alert_only_when_in_stock", config.alert_only_when_in_stock),
+            "back_in_stock": _setting_bool("alert_back_in_stock", config.alert_back_in_stock),
+            "out_of_stock": _setting_bool("alert_out_of_stock", config.alert_out_of_stock),
+            "price_changes": _setting_bool("alert_price_changes", config.alert_price_changes),
+            "repeat_enabled": _setting_bool("alert_repeat_enabled", config.alert_repeat_enabled),
+            "repeat_interval_minutes": _setting_int(
+                "alert_repeat_interval_minutes",
+                config.alert_repeat_interval_minutes,
+                1,
+                10080,
             ),
-            "new_products_only": (
-                config.alert_new_products_only
-            ),
-            "only_when_in_stock": (
-                config.alert_only_when_in_stock
-            ),
-            "back_in_stock": (
-                config.alert_back_in_stock
-            ),
-            "out_of_stock": (
-                config.alert_out_of_stock
-            ),
-            "price_changes": (
-                config.alert_price_changes
-            ),
-            "repeat_enabled": _get_repeat_enabled(),
-            "repeat_interval_minutes": _get_repeat_interval_minutes(),
         },
         "telegram": {
             "configured": telegram.enabled,
-            "chat_id_configured": bool(
-                config.telegram.chat_id
-            ),
+            "chat_id_configured": bool(config.telegram.chat_id),
         },
         "sources": [
-            {
-                "name": source.name,
-                "base_url": source.base_url,
-                "enabled": source.enabled,
-            }
+            {"name": source.name, "base_url": source.base_url, "enabled": source.enabled}
             for source in config.sources
         ],
     }
 
 
-@app.put("/api/settings/repeat-alerts")
-def update_repeat_alert_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    """Update repeat-alert settings persisted in SQLite."""
-    enabled = payload.get("enabled")
-    interval = payload.get("interval_minutes")
-
-    if not isinstance(enabled, bool):
-        raise HTTPException(
-            status_code=400,
-            detail="enabled must be a boolean.",
-        )
-
+@app.put("/api/settings/runtime")
+def update_runtime_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Persist scheduler interval and night-rest settings."""
     try:
-        interval_minutes = int(interval)
-    except (TypeError, ValueError):
-        raise HTTPException(
-            status_code=400,
-            detail="interval_minutes must be an integer.",
-        )
+        interval = int(payload.get("interval_minutes"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="interval_minutes must be an integer.") from exc
+    if not 1 <= interval <= 1440:
+        raise HTTPException(status_code=400, detail="interval_minutes must be between 1 and 1440.")
 
-    if not 1 <= interval_minutes <= 10080:
-        raise HTTPException(
-            status_code=400,
-            detail="interval_minutes must be between 1 and 10080 minutes.",
-        )
+    enabled = payload.get("night_mode_enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="night_mode_enabled must be a boolean.")
 
-    db.set_setting("alert_repeat_enabled", str(enabled).lower())
-    db.set_setting("alert_repeat_interval_minutes", str(interval_minutes))
+    start = str(payload.get("night_mode_start", "")).strip()
+    end = str(payload.get("night_mode_end", "")).strip()
+    for field, value in (("night_mode_start", start), ("night_mode_end", end)):
+        try:
+            datetime.strptime(value, "%H:%M")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"{field} must use HH:MM format.") from exc
+
+    timezone_name = str(payload.get("timezone", config.timezone)).strip() or config.timezone
+    try:
+        ZoneInfo(timezone_name)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid timezone.") from exc
+
+    db.set_setting("scrape_interval_minutes", str(interval))
+    db.set_setting("night_mode_enabled", str(enabled).lower())
+    db.set_setting("night_mode_start", start)
+    db.set_setting("night_mode_end", end)
+    db.set_setting("app_timezone", timezone_name)
 
     return {
-        "enabled": enabled,
-        "interval_minutes": interval_minutes,
+        "interval_minutes": interval,
+        "night_mode_enabled": enabled,
+        "night_mode_start": start,
+        "night_mode_end": end,
+        "timezone": timezone_name,
     }
 
+
+@app.put("/api/settings/alerts")
+def update_alert_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Persist all user-configurable alert behaviour."""
+    fields = {
+        "new_products": config.alert_new_products_only,
+        "back_in_stock": config.alert_back_in_stock,
+        "out_of_stock": config.alert_out_of_stock,
+        "price_changes": config.alert_price_changes,
+        "repeat_enabled": config.alert_repeat_enabled,
+    }
+
+    values: dict[str, bool] = {}
+    for key, default in fields.items():
+        value = payload.get(key, _setting_bool(f"alert_{key}", default))
+        if not isinstance(value, bool):
+            raise HTTPException(status_code=400, detail=f"{key} must be a boolean.")
+        values[key] = value
+        db.set_setting(f"alert_{key}", str(value).lower())
+
+    if "repeat_interval_minutes" in payload:
+        try:
+            interval = int(payload["repeat_interval_minutes"])
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="repeat_interval_minutes must be an integer.") from exc
+        if not 1 <= interval <= 10080:
+            raise HTTPException(status_code=400, detail="repeat_interval_minutes must be between 1 and 10080.")
+        db.set_setting("alert_repeat_interval_minutes", str(interval))
+    else:
+        interval = _setting_int("alert_repeat_interval_minutes", config.alert_repeat_interval_minutes, 1, 10080)
+
+    return {**values, "repeat_interval_minutes": interval}
+
+
+@app.put("/api/settings/repeat-alerts")
+def update_repeat_alert_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Backward-compatible repeat-alert settings endpoint."""
+    return update_alert_settings({
+        "repeat_enabled": payload.get("enabled"),
+        "repeat_interval_minutes": payload.get("interval_minutes"),
+    })
 
 # ---------------------------------------------------------------------------
 # Stats

@@ -446,6 +446,20 @@ class Tracker:
     # Watch processing
     # ------------------------------------------------------------------
 
+    def _setting_bool(self, key: str, default: bool) -> bool:
+        value = self.db.get_setting(key, str(default).lower())
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _setting_int(self, key: str, default: int, minimum: int, maximum: int) -> int:
+        value = self.db.get_setting(key, str(default))
+        try:
+            return max(minimum, min(maximum, int(value)))
+        except (TypeError, ValueError):
+            return max(minimum, min(maximum, int(default)))
+
+    def _alert_enabled(self, event: str, default: bool) -> bool:
+        return self._setting_bool(f"alert_{event}", default)
+
     def _repeat_alert_due(self, watch: Watch) -> bool:
         """Return True when a repeat alert is due for an in-stock watch.
 
@@ -458,21 +472,18 @@ class Tracker:
         if not watch.in_stock:
             return False
 
-        enabled_value = self.db.get_setting(
-            "alert_repeat_enabled",
-            str(self.config.alert_repeat_enabled).lower(),
-        )
-        if enabled_value.strip().lower() not in {"1", "true", "yes", "on"}:
+        if not self._alert_enabled(
+            "repeat_enabled",
+            self.config.alert_repeat_enabled,
+        ):
             return False
 
-        interval_value = self.db.get_setting(
-            "alert_repeat_interval_minutes",
-            str(self.config.alert_repeat_interval_minutes),
+        interval_minutes = self._setting_int(
+            "repeat_interval_minutes",
+            self.config.alert_repeat_interval_minutes,
+            1,
+            10080,
         )
-        try:
-            interval_minutes = max(1, int(interval_value))
-        except (TypeError, ValueError):
-            interval_minutes = max(1, int(self.config.alert_repeat_interval_minutes))
         state = self.db.get_alert_state(watch.id)
 
         if state is None or not state.last_alerted_at:
@@ -506,140 +517,96 @@ class Tracker:
         rules: list[TrackingRule],
         seed_only: bool,
         result: SourceRunResult,
-        alert_callback: Callable[
-            [AlertCandidate],
-            None,
-        ]
-        | None,
+        alert_callback: Callable[[AlertCandidate], None] | None,
     ) -> None:
-        """
-        Process one discovered watch.
+        """Process one scraped watch and create at most one alert."""
 
-        The catalogue is always updated.
+        existing = None if is_new else self.db.get_watch(watch.id)
 
-        Alert creation is deliberately separate from catalogue updates.
-        """
+        # Capture previous values BEFORE updating the catalogue.
+        was_in_stock = existing.in_stock if existing is not None else None
+        previous_price = existing.price if existing is not None else None
+
+        if existing is None:
+            self.db.save_watch(watch)
+        else:
+            existing.update_from(watch)
+            self.db.save_watch(existing)
+
+        matching_rules = [
+            rule for rule in rules if rule.matches(watch)
+        ]
+
+        if not matching_rules:
+            return
+
+        alert_type: str | None = None
+        should_alert = False
 
         if is_new:
-            self.db.save_watch(
-                watch
-            )
-
+            # A newly discovered tracked watch must alert even during the
+            # initial catalogue seed. This is intentionally independent of
+            # the UI's "silent seed" setting for untracked watches.
             should_alert = (
-                self.config.alert_new_products_only
-                and self.config.alert_only_when_in_stock
+                self._alert_enabled(
+                    "new_products",
+                    self.config.alert_new_products_only,
+                )
                 and watch.in_stock
+                and self._alert_enabled(
+                    "only_when_in_stock",
+                    self.config.alert_only_when_in_stock,
+                )
             )
             alert_type = "new"
 
         else:
-            existing = self.db.get_watch(
-                watch.id
-            )
-
-            if existing is None:
-                # Extremely unlikely because we checked existence above,
-                # but treating it as a new item is safer than losing it.
-                self.db.save_watch(
-                    watch
+            # Stock transitions have priority over price changes so one
+            # scrape does not produce multiple Telegram alerts for a watch.
+            if was_in_stock is True and not watch.in_stock:
+                should_alert = self._alert_enabled(
+                    "out_of_stock",
+                    self.config.alert_out_of_stock,
                 )
+                alert_type = "out_of_stock"
 
+            elif was_in_stock is False and watch.in_stock and not seed_only:
                 should_alert = (
-                    self.config.alert_new_products_only
-                    and self.config.alert_only_when_in_stock
-                    and watch.in_stock
-                    and not seed_only
+                    self._alert_enabled(
+                        "back_in_stock",
+                        self.config.alert_back_in_stock,
+                    )
+                    and self._setting_bool(
+                        "only_when_in_stock",
+                        self.config.alert_only_when_in_stock,
+                    )
                 )
-
-                alert_type = "new"
-
-            else:
-                # Compare the previous observation with the new one before
-                # updating the catalogue.
-                was_in_stock = existing.in_stock
-                is_now_in_stock = watch.in_stock
-
-                # Preserve the catalogue's permanent identity and update
-                # the latest observation.
-                existing.update_from(
-                    watch
-                )
-
-                self.db.save_watch(
-                    existing
-                )
-
-                # Alert once when an existing watch transitions from
-                # out-of-stock to in-stock. A watch that remains in stock
-                # will not generate an alert on every polling cycle.
-                back_in_stock = (
-                    not was_in_stock
-                    and is_now_in_stock
-                    and not seed_only
-                )
-
-                should_alert = (
-                    self.config.alert_back_in_stock
-                    and self.config.alert_only_when_in_stock
-                    and back_in_stock
-                )
-
                 alert_type = "back_in_stock"
 
-        matching_rules = [
-            rule
-            for rule in rules
-            if rule.matches(watch)
-        ]
-
-        if not matching_rules:
-            # First-run catalogue seeding remains silent for untracked
-            # watches, but a newly discovered watch that already matches
-            # an enabled tracking rule must still generate its alert.
-            if is_new and seed_only and self.config.seed_catalogue_silently:
-                logger.debug(
-                    "Seeded untracked watch %s silently.",
-                    watch.id,
+            elif (
+                previous_price is not None
+                and watch.price is not None
+                and float(previous_price) != float(watch.price)
+            ):
+                should_alert = self._alert_enabled(
+                    "price_changes",
+                    self.config.alert_price_changes,
                 )
+                alert_type = "price_changed"
 
-            else:
-                logger.debug(
-                    "Watch %s does not match any enabled tracking rule.",
-                    watch.id,
-                )
-
-            return
-
-        # A newly discovered tracked watch is an alertable event even
-        # during the first catalogue seed. This prevents a tracked model
-        # from being silently skipped just because it did not exist in
-        # the catalogue before this scrape.
-        if is_new and seed_only and self.config.seed_catalogue_silently:
-            logger.info(
-                "New tracked watch %s found during catalogue seed; alerting.",
-                watch.name,
-            )
-
-        # A watch that remains in stock is normally ignored after its
-        # initial/back-in-stock alert. If repeat alerts are enabled, create
-        # another alert only after the configured interval has elapsed.
-        if not should_alert:
-            if not self._repeat_alert_due(watch):
-                return
-
+        # Repeat alerts only apply while the watch remains in stock.
+        if not should_alert and watch.in_stock and self._repeat_alert_due(watch):
             should_alert = True
             alert_type = "repeat"
 
-        # One watch should produce one Telegram alert even if multiple
-        # rules match it.
+        if not should_alert or alert_type is None:
+            return
+
         alert_id = self.db.create_alert(
             watch=watch,
             alert_type=alert_type,
             status="pending",
-            telegram_chat_id=(
-                self.config.telegram.chat_id
-                or None
-            ),
+            telegram_chat_id=self.config.telegram.chat_id or None,
         )
 
         result.alerts_created += 1
@@ -647,10 +614,7 @@ class Tracker:
         candidate = AlertCandidate(
             watch=watch,
             alert_type=alert_type,
-            rule_ids=[
-                rule.id
-                for rule in matching_rules
-            ],
+            rule_ids=[rule.id for rule in matching_rules],
         )
 
         logger.info(
@@ -662,18 +626,9 @@ class Tracker:
 
         if alert_callback is not None:
             try:
-                alert_callback(
-                    candidate
-                )
-
+                alert_callback(candidate)
             except Exception as exc:
-                # The alert record remains pending/failed and can be
-                # retried by the notification layer.
-                self.db.mark_alert_failed(
-                    alert_id,
-                    str(exc),
-                )
-
+                self.db.mark_alert_failed(alert_id, str(exc))
                 logger.exception(
                     "Alert callback failed for %s.",
                     watch.id,

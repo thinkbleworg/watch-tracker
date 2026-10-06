@@ -354,10 +354,17 @@ class TelegramNotifier:
         name = html.escape(str(watch.name or "Unknown watch"))
         source = html.escape(self._source_label(watch.source))
 
-        heading = (
-            "⌚ <b>HMT Tracker Alert</b>"
-            if alert_type in {"tracked", "back_in_stock", "repeat"}
-            else "⌚ <b>New HMT Watch Found</b>"
+        headings = {
+            "tracked": "⌚ <b>HMT Tracker Alert</b>",
+            "back_in_stock": "🟢 <b>Back in Stock</b>",
+            "price_changed": "💰 <b>Price Changed</b>",
+            "out_of_stock": "🔴 <b>Out of Stock</b>",
+            "repeat": "🔔 <b>HMT Tracker Alert</b>",
+            "new": "🆕 <b>New HMT Watch Found</b>",
+        }
+        heading = headings.get(
+            alert_type,
+            "⌚ <b>HMT Watch Alert</b>",
         )
 
         lines = [
@@ -366,6 +373,9 @@ class TelegramNotifier:
             f"<b>{name}</b>",
             f"Source: {source}",
         ]
+
+        if alert_type == "out_of_stock":
+            lines.append("Stock: <b>Out of stock</b>")
 
         if getattr(watch, "model_number", None):
             model = html.escape(str(watch.model_number))
@@ -381,7 +391,7 @@ class TelegramNotifier:
 
         stock = self._format_stock(watch)
 
-        if stock:
+        if stock and alert_type != "out_of_stock":
             lines.append(f"Stock: <b>{html.escape(stock)}</b>")
 
         if getattr(watch, "product_url", None):
