@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import urljoin
 
 import requests
+from scrapers.http_policy import request as paced_request
 from bs4 import BeautifulSoup
 
 
@@ -105,33 +106,8 @@ class BaseScraper(ABC):
         json: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
     ) -> requests.Response:
-        last_error: Exception | None = None
-
-        for attempt in range(1, self.retries + 1):
-            try:
-                response = self.session.request(
-                    method=method,
-                    url=url,
-                    params=params,
-                    data=data,
-                    json=json,
-                    headers=headers,
-                    timeout=self.timeout,
-                )
-
-                response.raise_for_status()
-                return response
-
-            except requests.RequestException as exc:
-                last_error = exc
-
-                if attempt == self.retries:
-                    raise
-
-        # Defensive fallback. The loop either returns or raises.
-        raise RuntimeError(
-            f"HTTP request failed: {method} {url}"
-        ) from last_error
+        return paced_request(self.session, method, url,
+                             timeout=self.timeout, retries=self.retries, params=params, data=data, json=json, headers=headers)
 
     def absolute_url(self, path_or_url: str) -> str:
         """

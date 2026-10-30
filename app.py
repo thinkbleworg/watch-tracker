@@ -17,7 +17,7 @@ from config import config
 from database import Database
 from models import TrackingRule
 from notifier import TelegramNotifier
-from scheduler import TrackerScheduler
+from priority_scheduler import PriorityScheduler
 from tracker import Tracker
 
 
@@ -48,11 +48,11 @@ telegram = TelegramNotifier(
     db,
 )
 
-scheduler = TrackerScheduler(
+scheduler = PriorityScheduler(
     tracker,
     interval_seconds=config.scrape_interval_seconds,
     database=db,
-    alert_callback=telegram.send_candidate,
+    alert_callback=telegram.enqueue_candidate,
 )
 
 
@@ -76,6 +76,7 @@ async def lifespan(app: FastAPI):
     """
     logger.info("Starting HMT Watch Tracker")
 
+    telegram.start()
     scheduler.start(
         run_immediately=config.run_on_startup,
     )
@@ -85,6 +86,7 @@ async def lifespan(app: FastAPI):
     logger.info("Stopping HMT Watch Tracker")
 
     scheduler.stop()
+    telegram.stop()
 
 
 app = FastAPI(
@@ -493,6 +495,7 @@ def api_runs(
 def api_watches(
     source: str | None = None,
     in_stock: bool | None = None,
+    availability: str | None = None,
     search: str | None = None,
     limit: int = Query(
         default=100,
@@ -515,9 +518,12 @@ def api_watches(
       - collection
       - gender
     """
+    if availability is not None and availability not in {"available", "coming_soon", "out_of_stock", "unknown"}:
+        raise HTTPException(status_code=400, detail="Invalid availability")
     all_watches = db.get_watches(
         source=source,
         in_stock=in_stock,
+        availability=availability,
         limit=100000,
         offset=0,
     )
@@ -676,7 +682,7 @@ def api_create_tracking_rule(
     # already available when the user created the tracker.
     initial_alerts = tracker.activate_tracking_rule(
         rule,
-        alert_callback=telegram.send_candidate,
+        alert_callback=telegram.enqueue_candidate,
     )
 
     return {
@@ -1063,6 +1069,7 @@ def api_config() -> dict[str, Any]:
             "seed_silently": config.seed_catalogue_silently,
             "new_products_only": _setting_bool("alert_new_products", config.alert_new_products_only),
             "only_when_in_stock": _setting_bool("alert_only_when_in_stock", config.alert_only_when_in_stock),
+            "coming_soon": _setting_bool("alert_coming_soon", True),
             "back_in_stock": _setting_bool("alert_back_in_stock", config.alert_back_in_stock),
             "out_of_stock": _setting_bool("alert_out_of_stock", config.alert_out_of_stock),
             "price_changes": _setting_bool("alert_price_changes", config.alert_price_changes),
@@ -1133,6 +1140,7 @@ def update_alert_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]
     """Persist all user-configurable alert behaviour."""
     fields = {
         "new_products": config.alert_new_products_only,
+        "coming_soon": True,
         "back_in_stock": config.alert_back_in_stock,
         "out_of_stock": config.alert_out_of_stock,
         "price_changes": config.alert_price_changes,

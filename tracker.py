@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
@@ -192,9 +193,12 @@ class Tracker:
         # Recover abandoned records before creating the new run record.
         # This keeps the run history accurate after a process/container
         # restart without touching a scrape that may still be active.
-        self._recover_stale_runs()
-
-        run_id = self.db.start_scrape_run()
+        try:
+            self._recover_stale_runs()
+            run_id = self.db.start_scrape_run()
+        except Exception:
+            self._run_lock.release()
+            raise
 
         result = TrackerRunResult(
             run_id=run_id,
@@ -215,14 +219,14 @@ class Tracker:
 
             result.first_run_seed = first_run
 
-            for source_config in enabled_sources():
-                source_result = self._run_source(
-                    source_config.name,
-                    rules=rules,
-                    seed_only=first_run,
-                    alert_callback=alert_callback,
-                )
-
+            sources = list(self.config.sources)
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [pool.submit(
+                    self._run_source, source.name, rules=rules,
+                    seed_only=first_run, alert_callback=alert_callback,
+                ) for source in sources if source.enabled]
+                source_results = [future.result() for future in futures]
+            for source_result in source_results:
                 result.sources.append(
                     source_result
                 )
@@ -340,9 +344,20 @@ class Tracker:
             return result
 
         try:
-            watches = self._scrape_source(
-                source
-            )
+            processed_ids: set[str] = set()
+            def process_discovered(watch: Watch) -> None:
+                if watch.id in processed_ids:
+                    return
+                processed_ids.add(watch.id)
+                is_new = not self.db.watch_exists(watch.id)
+                if is_new:
+                    result.new_products += 1
+                self._process_watch(
+                    watch, is_new=is_new, rules=rules, seed_only=seed_only,
+                    result=result, alert_callback=alert_callback,
+                )
+
+            watches = self._scrape_source(source, on_watch=process_discovered)
 
             if not watches:
                 raise RuntimeError(
@@ -372,21 +387,7 @@ class Tracker:
             )
 
             for watch in watches:
-                is_new = not self.db.watch_exists(
-                    watch.id
-                )
-
-                if is_new:
-                    result.new_products += 1
-
-                self._process_watch(
-                    watch,
-                    is_new=is_new,
-                    rules=rules,
-                    seed_only=seed_only,
-                    result=result,
-                    alert_callback=alert_callback,
-                )
+                process_discovered(watch)
 
             return result
 
@@ -410,6 +411,7 @@ class Tracker:
     def _scrape_source(
         self,
         source: str,
+        on_watch=None,
     ) -> list[Watch]:
         """Construct the appropriate scraper and execute it."""
 
@@ -440,7 +442,24 @@ class Tracker:
                 f"No scraper registered for source: {source}"
             )
 
-        return scraper.scrape()
+        if source == "hmt.store":
+            rules = self.db.get_tracking_rules(enabled_only=True)
+            def should_verify(product, product_id):
+                probe = Watch.create(
+                    id=str(product_id), source=source,
+                    name=str(product.get("name") or ""),
+                    sku=str(product.get("sku") or ""),
+                    product_url="", in_stock=False,
+                )
+                return any(rule.matches(probe) for rule in rules)
+            scraper.should_verify = should_verify
+
+        try:
+            if source == "hmt.store":
+                return scraper.scrape(on_watch=on_watch)
+            return scraper.scrape()
+        finally:
+            scraper.session.close()
 
     # ------------------------------------------------------------------
     # Watch processing
@@ -523,14 +542,24 @@ class Tracker:
 
         existing = None if is_new else self.db.get_watch(watch.id)
 
+        unknown_observation = watch.availability == "unknown"
+        previous_stock_check = existing.last_stock_check if existing else watch.last_stock_check
+        if unknown_observation and existing is not None:
+            watch.availability = existing.availability
+            watch.in_stock = existing.in_stock
+            watch.stock_count = existing.stock_count
+
         # Capture previous values BEFORE updating the catalogue.
         was_in_stock = existing.in_stock if existing is not None else None
         previous_price = existing.price if existing is not None else None
+        previous_availability = existing.availability if existing else None
 
         if existing is None:
             self.db.save_watch(watch)
         else:
             existing.update_from(watch)
+            if unknown_observation:
+                existing.last_stock_check = previous_stock_check
             self.db.save_watch(existing)
 
         matching_rules = [
@@ -543,7 +572,13 @@ class Tracker:
         alert_type: str | None = None
         should_alert = False
 
-        if is_new:
+        if unknown_observation:
+            return
+
+        if watch.availability == "coming_soon" and previous_availability != "coming_soon":
+            should_alert = self._alert_enabled("coming_soon", True)
+            alert_type = "coming_soon"
+        elif is_new:
             # A newly discovered tracked watch must alert even during the
             # initial catalogue seed. This is intentionally independent of
             # the UI's "silent seed" setting for untracked watches.
@@ -552,18 +587,14 @@ class Tracker:
                     "new_products",
                     self.config.alert_new_products_only,
                 )
-                and watch.in_stock
-                and self._alert_enabled(
-                    "only_when_in_stock",
-                    self.config.alert_only_when_in_stock,
-                )
+                and (watch.in_stock or not self._setting_bool("alert_only_when_in_stock", self.config.alert_only_when_in_stock))
             )
             alert_type = "new"
 
         else:
             # Stock transitions have priority over price changes so one
             # scrape does not produce multiple Telegram alerts for a watch.
-            if was_in_stock is True and not watch.in_stock:
+            if previous_availability != "out_of_stock" and watch.availability == "out_of_stock":
                 should_alert = self._alert_enabled(
                     "out_of_stock",
                     self.config.alert_out_of_stock,
@@ -575,10 +606,6 @@ class Tracker:
                     self._alert_enabled(
                         "back_in_stock",
                         self.config.alert_back_in_stock,
-                    )
-                    and self._setting_bool(
-                        "only_when_in_stock",
-                        self.config.alert_only_when_in_stock,
                     )
                 )
                 alert_type = "back_in_stock"

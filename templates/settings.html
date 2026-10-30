@@ -236,6 +236,7 @@ async function loadTrackerConfig() {
                     <input id="alert-new-products" type="checkbox" ${alertConfig.new_products_only ? "checked" : ""}>
                     New watch
                 </label>
+                <label><input id="alert-coming-soon" type="checkbox" ${alertConfig.coming_soon !== false ? "checked" : ""}> Coming soon</label>
                 <label style="display:flex;align-items:center;gap:9px;font-weight:600;">
                     <input id="alert-back-in-stock" type="checkbox" ${alertConfig.back_in_stock ? "checked" : ""}>
                     Back in stock
@@ -532,6 +533,7 @@ async function saveAlertSettings() {
 
     const payload = {
         new_products: document.getElementById("alert-new-products").checked,
+        coming_soon: document.getElementById("alert-coming-soon").checked,
         back_in_stock: document.getElementById("alert-back-in-stock").checked,
         price_changes: document.getElementById("alert-price-changes").checked,
         out_of_stock: document.getElementById("alert-out-of-stock").checked,

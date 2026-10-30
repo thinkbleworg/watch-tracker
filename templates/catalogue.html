@@ -89,8 +89,10 @@
                 class="form-select"
             >
                 <option value="">All watches</option>
-                <option value="true">In stock</option>
-                <option value="false">Out of stock</option>
+                <option value="available">In stock</option>
+                <option value="coming_soon">Coming soon</option>
+                <option value="out_of_stock">Out of stock</option>
+                <option value="unknown">Unknown</option>
             </select>
         </div>
 
@@ -483,7 +485,7 @@ async function loadCatalogue() {
         if (catalogueState.stock) {
 
             params.set(
-                "in_stock",
+                "availability",
                 catalogueState.stock
             );
 
@@ -674,7 +676,11 @@ function renderWatchCard(
 
     let stockText;
 
-    if (!watch.in_stock) {
+    if (watch.availability === "coming_soon") {
+        stockText = "Coming soon";
+    } else if (watch.availability === "unknown") {
+        stockText = "Unknown";
+    } else if (!watch.in_stock) {
 
         stockText =
             "Out of stock";

@@ -48,7 +48,7 @@ def make_watch():
     )
 
 
-def test_watch_alert_sends_image_before_details(tmp_path):
+def test_urgent_alert_sends_text_without_waiting_for_image(tmp_path):
     db = Database(str(tmp_path / "test.db"))
     notifier = TelegramNotifier(
         db,
@@ -69,13 +69,12 @@ def test_watch_alert_sends_image_before_details(tmp_path):
 
     call = session.calls[0]
 
-    assert call["url"].endswith("/sendPhoto")
+    assert call["url"].endswith("/sendMessage")
     assert call["data"]["chat_id"] == "chat"
-    assert call["data"]["photo"] == "https://example.com/gandaberunda.jpg"
-    assert "<b>HMT Men Gandaberunda</b>" in call["data"]["caption"]
-    assert "Source:" in call["data"]["caption"]
-    assert "Price:" in call["data"]["caption"]
-    assert "Stock:" in call["data"]["caption"]
+    assert "<b>HMT Men Gandaberunda</b>" in call["data"]["text"]
+    assert "Source:" in call["data"]["text"]
+    assert "Price:" in call["data"]["text"]
+    assert "Stock:" in call["data"]["text"]
 
 
 def test_watch_without_image_falls_back_to_text(tmp_path):

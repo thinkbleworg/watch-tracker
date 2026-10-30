@@ -1,0 +1,1525 @@
+--- a/app.py
++++ b/app.py
+@@ -17,7 +17,7 @@
+ from database import Database
+ from models import TrackingRule
+ from notifier import TelegramNotifier
+-from scheduler import TrackerScheduler
++from priority_scheduler import PriorityScheduler
+ from tracker import Tracker
+ 
+ 
+@@ -48,11 +48,11 @@
+     db,
+ )
+ 
+-scheduler = TrackerScheduler(
++scheduler = PriorityScheduler(
+     tracker,
+     interval_seconds=config.scrape_interval_seconds,
+     database=db,
+-    alert_callback=telegram.send_candidate,
++    alert_callback=telegram.enqueue_candidate,
+ )
+ 
+ 
+@@ -76,6 +76,7 @@
+     """
+     logger.info("Starting HMT Watch Tracker")
+ 
++    telegram.start()
+     scheduler.start(
+         run_immediately=config.run_on_startup,
+     )
+@@ -85,6 +86,7 @@
+     logger.info("Stopping HMT Watch Tracker")
+ 
+     scheduler.stop()
++    telegram.stop()
+ 
+ 
+ app = FastAPI(
+@@ -493,6 +495,7 @@
+ def api_watches(
+     source: str | None = None,
+     in_stock: bool | None = None,
++    availability: str | None = None,
+     search: str | None = None,
+     limit: int = Query(
+         default=100,
+@@ -515,9 +518,12 @@
+       - collection
+       - gender
+     """
++    if availability is not None and availability not in {"available", "coming_soon", "out_of_stock", "unknown"}:
++        raise HTTPException(status_code=400, detail="Invalid availability")
+     all_watches = db.get_watches(
+         source=source,
+         in_stock=in_stock,
++        availability=availability,
+         limit=100000,
+         offset=0,
+     )
+@@ -676,7 +682,7 @@
+     # already available when the user created the tracker.
+     initial_alerts = tracker.activate_tracking_rule(
+         rule,
+-        alert_callback=telegram.send_candidate,
++        alert_callback=telegram.enqueue_candidate,
+     )
+ 
+     return {
+@@ -1063,6 +1069,7 @@
+             "seed_silently": config.seed_catalogue_silently,
+             "new_products_only": _setting_bool("alert_new_products", config.alert_new_products_only),
+             "only_when_in_stock": _setting_bool("alert_only_when_in_stock", config.alert_only_when_in_stock),
++            "coming_soon": _setting_bool("alert_coming_soon", True),
+             "back_in_stock": _setting_bool("alert_back_in_stock", config.alert_back_in_stock),
+             "out_of_stock": _setting_bool("alert_out_of_stock", config.alert_out_of_stock),
+             "price_changes": _setting_bool("alert_price_changes", config.alert_price_changes),
+@@ -1133,6 +1140,7 @@
+     """Persist all user-configurable alert behaviour."""
+     fields = {
+         "new_products": config.alert_new_products_only,
++        "coming_soon": True,
+         "back_in_stock": config.alert_back_in_stock,
+         "out_of_stock": config.alert_out_of_stock,
+         "price_changes": config.alert_price_changes,
+--- a/database.py
++++ b/database.py
+@@ -257,6 +257,18 @@
+                 """
+             )
+ 
++            columns = {row["name"] for row in db.execute("PRAGMA table_info(watches)")}
++            if "availability" not in columns:
++                db.execute("ALTER TABLE watches ADD COLUMN availability TEXT")
++                db.execute("UPDATE watches SET availability = CASE WHEN in_stock = 1 THEN 'available' ELSE 'out_of_stock' END")
++            alert_columns = {row["name"] for row in db.execute("PRAGMA table_info(alerts)")}
++            for name, declaration in {
++                "snapshot": "TEXT", "attempts": "INTEGER NOT NULL DEFAULT 0",
++                "next_attempt_at": "REAL NOT NULL DEFAULT 0",
++            }.items():
++                if name not in alert_columns:
++                    db.execute(f"ALTER TABLE alerts ADD COLUMN {name} {declaration}")
++
+     # ------------------------------------------------------------------
+     # Watches / catalogue
+     # ------------------------------------------------------------------
+@@ -300,6 +312,7 @@
+         *,
+         source: str | None = None,
+         in_stock: bool | None = None,
++        availability: str | None = None,
+         search: str | None = None,
+         limit: int | None = None,
+         offset: int = 0,
+@@ -325,6 +338,10 @@
+         if in_stock is not None:
+             query += " AND in_stock = ?"
+             parameters.append(1 if in_stock else 0)
++
++        if availability is not None:
++            query += " AND availability = ?"
++            parameters.append(availability)
+ 
+         if search:
+             query += """
+@@ -418,6 +435,7 @@
+                         mrp,
+                         product_url,
+                         image_url,
++                        availability,
+                         in_stock,
+                         stock_count,
+                         category,
+@@ -429,7 +447,7 @@
+                     )
+                     VALUES (
+                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+-                        ?, ?, ?, ?, ?, ?
++                        ?, ?, ?, ?, ?, ?, ?
+                     )
+                     """,
+                     self._watch_values(watch),
+@@ -449,6 +467,7 @@
+                     mrp = COALESCE(?, mrp),
+                     product_url = ?,
+                     image_url = COALESCE(?, image_url),
++                    availability = ?,
+                     in_stock = ?,
+                     stock_count = ?,
+                     category = COALESCE(?, category),
+@@ -467,6 +486,7 @@
+                     watch.mrp,
+                     watch.product_url,
+                     watch.image_url,
++                    watch.availability,
+                     int(watch.in_stock),
+                     watch.stock_count,
+                     watch.category,
+@@ -513,7 +533,8 @@
+                             mrp,
+                             product_url,
+                             image_url,
+-                            in_stock,
++                            availability,
++                        in_stock,
+                             stock_count,
+                             category,
+                             collection,
+@@ -524,7 +545,7 @@
+                         )
+                         VALUES (
+                             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+-                            ?, ?, ?, ?, ?, ?
++                            ?, ?, ?, ?, ?, ?, ?
+                         )
+                         """,
+                         self._watch_values(watch),
+@@ -545,7 +566,8 @@
+                         mrp = COALESCE(?, mrp),
+                         product_url = ?,
+                         image_url = COALESCE(?, image_url),
+-                        in_stock = ?,
++                        availability = ?,
++                    in_stock = ?,
+                         stock_count = ?,
+                         category = COALESCE(?, category),
+                         collection = COALESCE(?, collection),
+@@ -563,7 +585,8 @@
+                         watch.mrp,
+                         watch.product_url,
+                         watch.image_url,
+-                        int(watch.in_stock),
++                        watch.availability,
++                    int(watch.in_stock),
+                         watch.stock_count,
+                         watch.category,
+                         watch.collection,
+@@ -760,9 +783,9 @@
+                     status,
+                     telegram_chat_id,
+                     error,
+-                    created_at
++                    created_at, snapshot
+                 )
+-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 """,
+                 (
+                     watch.id,
+@@ -776,6 +799,7 @@
+                     telegram_chat_id,
+                     error,
+                     utc_now(),
++                    json.dumps(watch.to_dict()),
+                 ),
+             )
+ 
+@@ -1348,6 +1372,7 @@
+             watch.mrp,
+             watch.product_url,
+             watch.image_url,
++            watch.availability,
+             int(watch.in_stock),
+             watch.stock_count,
+             watch.category,
+@@ -1373,6 +1398,7 @@
+             product_url=row["product_url"],
+             image_url=row["image_url"],
+             in_stock=bool(row["in_stock"]),
++            availability=row["availability"],
+             stock_count=row["stock_count"],
+             category=row["category"],
+             collection=row["collection"],
+--- a/models.py
++++ b/models.py
+@@ -53,6 +53,15 @@
+ 
+     # Last successful stock observation
+     last_stock_check: str
++
++    availability: str | None = None
++
++    def __post_init__(self) -> None:
++        if self.availability is None:
++            self.availability = "available" if self.in_stock else "out_of_stock"
++        if self.availability not in {"available", "out_of_stock", "coming_soon", "unknown"}:
++            raise ValueError(f"Invalid availability: {self.availability}")
++        self.in_stock = self.availability == "available"
+ 
+     def to_dict(self) -> dict[str, Any]:
+         """Convert the watch to a JSON/database-friendly dictionary."""
+@@ -72,6 +81,7 @@
+         name: str,
+         product_url: str,
+         in_stock: bool,
++        availability: str | None = None,
+         stock_count: int | None = None,
+         model_number: str | None = None,
+         sku: str | None = None,
+@@ -98,6 +108,7 @@
+             product_url=product_url,
+             image_url=image_url,
+             in_stock=in_stock,
++            availability=availability,
+             stock_count=stock_count,
+             category=category,
+             collection=collection,
+@@ -143,6 +154,7 @@
+         if latest.gender:
+             self.gender = latest.gender
+ 
++        self.availability = latest.availability
+         self.in_stock = latest.in_stock
+         self.stock_count = latest.stock_count
+ 
+@@ -161,6 +173,10 @@
+ 
+         We never invent a quantity when the source doesn't provide one.
+         """
++        if self.availability == "coming_soon":
++            return "Coming soon"
++        if self.availability == "unknown":
++            return "Unknown"
+         if not self.in_stock:
+             return "Out of stock"
+ 
+--- a/notifier.py
++++ b/notifier.py
+@@ -3,13 +3,16 @@
+ import html
+ import logging
+ import threading
++import time
++import json
++from types import SimpleNamespace
+ from typing import Any
+ 
+ import requests
+ 
+ from config import config
+ from database import Database
+-from models import AlertState
++from models import AlertState, Watch
+ from tracker import AlertCandidate
+ 
+ 
+@@ -43,6 +46,74 @@
+ 
+         self._session = requests.Session()
+         self._lock = threading.Lock()
++        self._wake = threading.Event()
++        self._stop = threading.Event()
++        self._thread = None
++        self._next_send = 0.0
++        self._telegram_blocked_until = 0.0
++
++    def enqueue_candidate(self, candidate: AlertCandidate) -> None:
++        # Tracker already committed the alert to SQLite: wake the outbox worker.
++        self._wake.set()
++
++    def start(self) -> None:
++        if self._thread and self._thread.is_alive():
++            return
++        self._stop.clear()
++        self._thread = threading.Thread(target=self._worker, name="telegram-outbox", daemon=True)
++        self._thread.start()
++
++    def stop(self) -> None:
++        self._stop.set()
++        self._wake.set()
++        if self._thread:
++            self._thread.join(timeout=self.timeout + 2)
++
++    def _worker(self) -> None:
++        while not self._stop.is_set():
++            if self.enabled:
++                try:
++                    self.deliver_due()
++                except Exception:
++                    logger.exception("Telegram outbox iteration failed")
++            self._wake.wait(1)
++            self._wake.clear()
++
++    def deliver_due(self) -> int:
++        """One durable outbox item at a time; stock alerts take priority."""
++        with self._lock:
++            if time.monotonic() < self._telegram_blocked_until:
++                return 0
++            with self.db.connection() as connection:
++                row = connection.execute("""
++                    SELECT * FROM alerts
++                    WHERE status IN ('pending', 'failed') AND next_attempt_at <= ?
++                    ORDER BY CASE WHEN alert_type IN ('back_in_stock','new','tracked') THEN 0 ELSE 1 END,
++                             created_at, id LIMIT 1
++                """, (time.time(),)).fetchone()
++            if row is None:
++                return 0
++            alert = dict(row)
++            try:
++                self._send_stored(alert)
++                self.db.mark_alert_sent(int(alert["id"]))
++                self._record_alert_state(str(alert["watch_id"]))
++                return 1
++            except Exception as exc:
++                self.db.mark_alert_failed(int(alert["id"]), str(exc))
++                delay = min(1800, 5 * 2 ** min(int(alert["attempts"]), 9))
++                with self.db.connection() as connection:
++                    connection.execute("UPDATE alerts SET attempts=attempts+1, next_attempt_at=? WHERE id=?",
++                                       (time.time() + delay, alert["id"]))
++                logger.warning("Telegram delivery failed for alert %s; retry deferred", alert["id"])
++                return 0
++
++    def _send_stored(self, alert: dict[str, Any]) -> dict[str, Any]:
++        # Never turn an old availability event into a message about current stock.
++        if alert.get("snapshot"):
++            watch = Watch.from_dict(json.loads(alert["snapshot"]))
++            return self._send_watch_message(watch, alert_type=str(alert["alert_type"]))
++        return self._send_message(self._format_stored_alert(alert))
+ 
+     @property
+     def enabled(self) -> bool:
+@@ -95,7 +166,7 @@
+             except Exception as exc:
+                 self.db.mark_alert_failed(
+                     alert_id,
+-                    error_message=str(exc),
++                    error=str(exc),
+                 )
+ 
+                 logger.exception(
+@@ -163,16 +234,7 @@
+                 alert_id = int(alert["id"])
+ 
+                 try:
+-                    watch = self.db.get_watch(str(alert["watch_id"]))
+-
+-                    if watch is not None:
+-                        self._send_watch_message(
+-                            watch,
+-                            alert_type=str(alert.get("alert_type") or "tracked"),
+-                        )
+-                    else:
+-                        message = self._format_stored_alert(alert)
+-                        self._send_message(message)
++                    self._send_stored(alert)
+ 
+                     self.db.mark_alert_sent(alert_id)
+ 
+@@ -191,7 +253,7 @@
+ 
+                     self.db.mark_alert_failed(
+                         alert_id,
+-                        error_message=str(exc),
++                        error=str(exc),
+                     )
+ 
+                     logger.exception(
+@@ -249,13 +311,15 @@
+ 
+         image_url = getattr(watch, "image_url", None)
+ 
+-        if image_url:
++        if image_url and alert_type not in {"back_in_stock", "new", "tracked"}:
+             try:
+                 return self._send_photo(
+                     image_url,
+                     caption=message,
+                 )
+             except Exception as exc:
++                if time.monotonic() < self._telegram_blocked_until:
++                    raise
+                 # If the image URL is no longer reachable or Telegram
+                 # rejects it, fall back to the text alert rather than
+                 # losing the notification entirely.
+@@ -267,6 +331,22 @@
+                 )
+ 
+         return self._send_message(message)
++
++    def _pace(self) -> None:
++        if time.monotonic() < self._telegram_blocked_until:
++            raise RuntimeError("Telegram flood-control cooldown active")
++        time.sleep(max(0, self._next_send - time.monotonic()))
++        self._next_send = time.monotonic() + (3.1 if str(self.chat_id).startswith("-") else 1.1)
++
++    def _check_rate_limit(self, response) -> None:
++        if getattr(response, "status_code", None) != 429:
++            return
++        try:
++            delay = max(1, int(response.json().get("parameters", {}).get("retry_after", 60)))
++        except (ValueError, TypeError):
++            delay = 60
++        self._telegram_blocked_until = time.monotonic() + delay
++        raise RuntimeError(f"Telegram flood control: wait {delay} seconds")
+ 
+     def _send_photo(
+         self,
+@@ -280,6 +360,7 @@
+                 "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."
+             )
+ 
++        self._pace()
+         response = self._session.post(
+             f"{self.api_url}/sendPhoto",
+             data={
+@@ -291,6 +372,7 @@
+             timeout=self.timeout,
+         )
+ 
++        self._check_rate_limit(response)
+         response.raise_for_status()
+ 
+         try:
+@@ -316,6 +398,7 @@
+                 "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."
+             )
+ 
++        self._pace()
+         response = self._session.post(
+             f"{self.api_url}/sendMessage",
+             data={
+@@ -327,6 +410,7 @@
+             timeout=self.timeout,
+         )
+ 
++        self._check_rate_limit(response)
+         response.raise_for_status()
+ 
+         try:
+@@ -359,6 +443,7 @@
+             "back_in_stock": "🟢 <b>Back in Stock</b>",
+             "price_changed": "💰 <b>Price Changed</b>",
+             "out_of_stock": "🔴 <b>Out of Stock</b>",
++            "coming_soon": "🟠 <b>Coming Soon</b>",
+             "repeat": "🔔 <b>HMT Tracker Alert</b>",
+             "new": "🆕 <b>New HMT Watch Found</b>",
+         }
+@@ -372,6 +457,7 @@
+             "",
+             f"<b>{name}</b>",
+             f"Source: {source}",
++            "Checked: " + html.escape(str(getattr(watch, "last_stock_check", ""))),
+         ]
+ 
+         if alert_type == "out_of_stock":
+@@ -413,7 +499,7 @@
+         because the catalogue may have changed since the original alert.
+         """
+         name = html.escape(
+-            str(alert.get("watch_name") or "Unknown watch")
++            str(alert.get("name") or alert.get("watch_name") or "Unknown watch")
+         )
+ 
+         source = html.escape(
+@@ -427,15 +513,27 @@
+             f"Source: {source}",
+         ]
+ 
++        event_type = str(alert.get("alert_type") or "")
++        lines[0] = {
++            "back_in_stock": "🟢 <b>Back in Stock — recorded event</b>",
++            "out_of_stock": "🔴 <b>Out of Stock — recorded event</b>",
++            "coming_soon": "🟠 <b>Coming Soon — recorded event</b>",
++        }.get(event_type, "⌚ <b>HMT Watch Alert — recorded event</b>")
++        if alert.get("created_at"):
++            lines.append("Detected: " + html.escape(str(alert["created_at"])))
+         stock_count = alert.get("stock_count")
+ 
+-        if stock_count is not None:
++        if event_type == "coming_soon":
++            stock_text = "Coming soon"
++        elif event_type == "out_of_stock":
++            stock_text = "Out of stock"
++        elif stock_count is not None:
+             try:
+                 stock_text = f"{int(stock_count)} available"
+             except (TypeError, ValueError):
+                 stock_text = str(stock_count)
+         else:
+-            stock_text = "In stock"
++            stock_text = "Quantity not supplied at detection"
+ 
+         lines.append(f"Stock: <b>{html.escape(stock_text)}</b>")
+ 
+@@ -458,6 +556,8 @@
+ 
+     @staticmethod
+     def _format_stock(watch: Any) -> str:
++        if getattr(watch, "availability", None) == "coming_soon":
++            return "Coming soon"
+         if not getattr(watch, "in_stock", False):
+             return "Out of stock"
+ 
+--- a/priority_scheduler.py
++++ b/priority_scheduler.py
+@@ -0,0 +1,104 @@
++"""Independent source workers sharing host pacing and the durable alert outbox."""
++from dataclasses import replace
++import time
++from scheduler import TrackerScheduler
++from tracker import Tracker
++from scrapers.http_policy import policy_status
++
++
++class PriorityTracker(Tracker):
++    def __init__(self, *args, **kwargs):
++        super().__init__(*args, **kwargs)
++        self.discovery_due = 0.0
++        self.mode = 'discovery'
++
++    def run(self, **kwargs):
++        discovery = time.monotonic() >= self.discovery_due
++        self.mode = 'discovery' if discovery else 'priority'
++        result = super().run(**kwargs)
++        if discovery and result.success:
++            self.discovery_due = time.monotonic() + 900
++        return result
++
++    def _run_source(self, source, **kwargs):
++        from tracker import SourceRunResult
++        if self.mode == 'priority' and not any(r.source in (None, source) for r in kwargs['rules']):
++            return SourceRunResult(source=source, success=True)
++        result = super()._run_source(source, **kwargs)
++        if self.mode == "priority":
++            result.new_products = 0
++        return result
++
++    def _scrape_source(self, source, on_watch=None):
++        # Bulk endpoints amortize request cost across all tracked watches.
++        # Discovery retains every product; priority commits only tracked products.
++        rules = self.db.get_tracking_rules(enabled_only=True)
++        if self.mode == 'priority' and not any(r.source in (None, source) for r in rules):
++            return []
++        def selected(watch):
++            return self.mode == 'discovery' or any(replace(rule, minimum_stock=0).matches(watch) for rule in rules)
++        def stream(watch):
++            if on_watch and selected(watch):
++                on_watch(watch)
++        watches = super()._scrape_source(source, on_watch=stream)
++        # Return the observed catalogue to preserve run health/count semantics;
++        # _process_watch below restricts commits during priority cycles.
++        return watches
++
++    def _process_watch(self, watch, **kwargs):
++        if self.mode == 'priority' and not any(replace(r, minimum_stock=0).matches(watch) for r in kwargs['rules']):
++            return
++        return super()._process_watch(watch, **kwargs)
++
++
++class PriorityScheduler:
++    def __init__(self, tracker, *, interval_seconds=None, database=None, alert_callback=None):
++        self.workers = {}
++        for source in tracker.config.sources:
++            if source.enabled:
++                engine = PriorityTracker(database, tracker_config=replace(tracker.config, sources=(source,)))
++                self.workers[source.name] = TrackerScheduler(engine,
++                    interval_seconds=interval_seconds, database=database, alert_callback=alert_callback)
++
++    def start(self, *, run_immediately=False):
++        for worker in self.workers.values():
++            worker.start(run_immediately=run_immediately)
++
++    def stop(self, timeout=10):
++        for worker in self.workers.values():
++            worker.stop(timeout=timeout)
++
++    @property
++    def running(self):
++        return bool(self.workers) and all(w.running for w in self.workers.values())
++
++    def run_now(self):
++        # Manual execution uses the same locks as scheduled source executions.
++        from concurrent.futures import ThreadPoolExecutor
++        from tracker import TrackerRunResult
++        if any(w.execution_running for w in self.workers.values()):
++            raise RuntimeError('A source check is already running.')
++        with ThreadPoolExecutor(max_workers=2) as pool:
++            results = list(pool.map(lambda w: w.run_now(), self.workers.values()))
++        if not results:
++            raise RuntimeError('No enabled sources.')
++        return TrackerRunResult(run_id=results[0].run_id, success=any(r.success for r in results),
++            sources=[s for r in results for s in r.sources],
++            total_products=sum(r.total_products for r in results),
++            new_products=sum(r.new_products for r in results),
++            in_stock_products=sum(r.in_stock_products for r in results),
++            alerts_created=sum(r.alerts_created for r in results))
++
++    def status(self):
++        states = {name: {**w.status(), 'mode': w.tracker.mode,
++                   'discovery_due_in_seconds': max(0, round(w.tracker.discovery_due-time.monotonic()))}
++                  for name, w in self.workers.items()}
++        runs = [w.last_result for w in self.workers.values() if w.last_result]
++        times = [w.last_run_at for w in self.workers.values() if w.last_run_at]
++        return {'running': self.running, 'execution_running': any(w.execution_running for w in self.workers.values()),
++                'interval_seconds': min((s['interval_seconds'] for s in states.values()), default=60),
++                'night_mode': any(s['night_mode'] for s in states.values()),
++                'last_run_at': max(times, default=None),
++                'last_error': '; '.join(s['last_error'] for s in states.values() if s['last_error']) or None,
++                'last_result': TrackerScheduler._result_to_dict(runs[-1]) if runs else None,
++                'sources': states, 'http_hosts': policy_status()}
+--- a/scheduler.py
++++ b/scheduler.py
+@@ -147,6 +147,9 @@
+             thread.join(timeout=timeout)
+ 
+         with self._lock:
++            if thread and thread.is_alive():
++                logger.warning("Scheduler stop requested; active execution is still finishing")
++                return
+             self._running = False
+             self._thread = None
+ 
+@@ -258,25 +261,21 @@
+         exception must not kill the 60-second scheduler permanently.
+         """
+         try:
+-            if run_immediately:
+-                self._run_safely("startup")
+-
++            next_due = time.monotonic() if run_immediately else time.monotonic() + self._get_interval_seconds()
+             while not self._stop_event.is_set():
++                now = time.monotonic()
++                if now < next_due:
++                    self._stop_event.wait(min(1.0, next_due - now))
++                    continue
+                 interval = self._get_interval_seconds()
+-
+-                if self._is_night_mode():
+-                    logger.debug("Night-time rest mode active; scheduled scrape skipped.")
+-                    self._stop_event.wait(min(60, interval))
+-                    continue
+-
+-                self._stop_event.wait(interval)
+-                if self._stop_event.is_set():
+-                    break
+-
+-                if self._is_night_mode():
+-                    continue
+-
+-                self._run_safely("scheduled")
++                if not self._is_night_mode():
++                    self._run_safely("scheduled")
++                next_due += interval
++                now = time.monotonic()
++                if next_due <= now:
++                    missed = int((now - next_due) // interval) + 1
++                    logger.warning("Tracker exceeded cadence; skipping %s missed ticks", missed)
++                    next_due += missed * interval
+ 
+         except Exception:
+             # This should only be reached for an unexpected scheduler
+--- a/scrapers/base.py
++++ b/scrapers/base.py
+@@ -7,6 +7,7 @@
+ from urllib.parse import urljoin
+ 
+ import requests
++from scrapers.http_policy import request as paced_request
+ from bs4 import BeautifulSoup
+ 
+ 
+@@ -105,33 +106,8 @@
+         json: dict[str, Any] | None = None,
+         headers: dict[str, str] | None = None,
+     ) -> requests.Response:
+-        last_error: Exception | None = None
+-
+-        for attempt in range(1, self.retries + 1):
+-            try:
+-                response = self.session.request(
+-                    method=method,
+-                    url=url,
+-                    params=params,
+-                    data=data,
+-                    json=json,
+-                    headers=headers,
+-                    timeout=self.timeout,
+-                )
+-
+-                response.raise_for_status()
+-                return response
+-
+-            except requests.RequestException as exc:
+-                last_error = exc
+-
+-                if attempt == self.retries:
+-                    raise
+-
+-        # Defensive fallback. The loop either returns or raises.
+-        raise RuntimeError(
+-            f"HTTP request failed: {method} {url}"
+-        ) from last_error
++        return paced_request(self.session, method, url,
++                             timeout=self.timeout, retries=self.retries, params=params, data=data, json=json, headers=headers)
+ 
+     def absolute_url(self, path_or_url: str) -> str:
+         """
+--- a/scrapers/hmt_official.py
++++ b/scrapers/hmt_official.py
+@@ -8,6 +8,7 @@
+ from urllib.parse import urljoin
+ 
+ import requests
++from scrapers.http_policy import request as paced_request
+ from bs4 import BeautifulSoup
+ 
+ from config import SourceConfig
+@@ -104,38 +105,8 @@
+     ) -> requests.Response:
+         """Perform an HTTP request with simple retry handling."""
+ 
+-        last_error: Exception | None = None
+-
+-        for attempt in range(1, self.retries + 1):
+-            try:
+-                response = self.session.request(
+-                    method,
+-                    url,
+-                    timeout=self.timeout_seconds,
+-                    **kwargs,
+-                )
+-
+-                response.raise_for_status()
+-
+-                return response
+-
+-            except requests.RequestException as exc:
+-                last_error = exc
+-
+-                logger.warning(
+-                    "HMT request failed "
+-                    "(attempt %s/%s): %s %s: %s",
+-                    attempt,
+-                    self.retries,
+-                    method,
+-                    url,
+-                    exc,
+-                )
+-
+-        raise RuntimeError(
+-            f"HMT request failed after {self.retries} attempts: "
+-            f"{method} {url}"
+-        ) from last_error
++        return paced_request(self.session, method, url,
++                             timeout=self.timeout_seconds, retries=self.retries, **kwargs)
+ 
+     def _post_filter_products(self) -> str:
+         """Fetch the main filtered product listing."""
+@@ -320,6 +291,7 @@
+             product_url=product_url,
+             image_url=image_url,
+             in_stock=in_stock,
++            availability=self._availability(card, in_stock),
+             stock_count=stock_count,
+             category=None,
+             collection=None,
+@@ -329,6 +301,14 @@
+     # ------------------------------------------------------------------
+     # Stock
+     # ------------------------------------------------------------------
++
++    def _availability(self, card: Any, in_stock: bool) -> str:
++        text = self._clean_text(card.get_text(" ", strip=True)).lower()
++        if "coming soon" in text:
++            return "coming_soon"
++        if "out of stock" in text or "sold out" in text or card.select_one(".outofstock"):
++            return "out_of_stock"
++        return "available" if in_stock else "unknown"
+ 
+     def _parse_stock(
+         self,
+@@ -343,6 +323,10 @@
+           purchasable products.
+         - `add_cart(id, '1')` is present on purchasable cards.
+         """
++
++        text = self._clean_text(card.get_text(" ", strip=True)).lower()
++        if any(label in text for label in ("coming soon", "out of stock", "sold out")):
++            return False, 0
+ 
+         if card.select_one(".outofstock") is not None:
+             return False, 0
+--- a/scrapers/hmt_store.py
++++ b/scrapers/hmt_store.py
+@@ -63,12 +63,14 @@
+ 
+         self.shop_id = shop_id
+         self.page_size = page_size
++        self.should_verify = None
++        self._stock_uncertain = False
+ 
+     # ------------------------------------------------------------------
+     # Public API
+     # ------------------------------------------------------------------
+ 
+-    def scrape(self) -> list[Watch]:
++    def scrape(self, on_watch=None) -> list[Watch]:
+         """
+         Fetch the complete catalogue from the store API.
+ 
+@@ -85,6 +87,7 @@
+         offset = 0
+ 
+         while True:
++            page_start_count = len(seen_ids)
+             products = self._fetch_page(
+                 offset=offset,
+                 limit=self.page_size,
+@@ -113,6 +116,8 @@
+ 
+                 seen_ids.add(identity)
+                 watches.append(watch)
++                if on_watch is not None:
++                    on_watch(watch)
+ 
+             logger.debug(
+                 "HMT store page: offset=%s returned=%s total=%s",
+@@ -120,6 +125,9 @@
+                 len(products),
+                 len(watches),
+             )
++
++            if len(seen_ids) == page_start_count:
++                raise RuntimeError("Store pagination made no progress; refusing an endless loop")
+ 
+             if len(products) < self.page_size:
+                 break
+@@ -269,6 +277,7 @@
+         if selling_price is None:
+             selling_price = mrp
+ 
++        self._stock_uncertain = False
+         in_stock, stock = self._stock(
+             product,
+             product_id=product_id,
+@@ -288,6 +297,7 @@
+             name=name,
+             product_url=product_url,
+             in_stock=in_stock,
++            availability="unknown" if self._stock_uncertain else None,
+             stock_count=stock,
+             sku=sku,
+             price=selling_price,
+@@ -401,6 +411,11 @@
+             return in_stock, stock_count
+ 
+         if not product_id:
++            self._stock_uncertain = True
++            return in_stock, stock_count
++
++        if self.should_verify is not None and not self.should_verify(product, product_id):
++            self._stock_uncertain = True
+             return in_stock, stock_count
+ 
+         try:
+@@ -426,6 +441,7 @@
+             )
+ 
+         except Exception:
++            self._stock_uncertain = True
+             logger.warning(
+                 "Unable to verify HMT store stock detail for %s; "
+                 "using bulk catalogue state.",
+--- a/scrapers/http_policy.py
++++ b/scrapers/http_policy.py
+@@ -0,0 +1,75 @@
++"""Per-host pacing and circuit breaker. Shared by all scraper instances."""
++import os
++import random
++import threading
++import time
++from email.utils import parsedate_to_datetime
++from urllib.parse import urlsplit
++import requests
++
++class HostPolicy:
++    def __init__(self):
++        self.lock = threading.Lock()
++        self.next_request = 0.0
++        self.blocked_until = 0.0
++        self.failures = 0
++        self.requests = 0
++        self.last_status = None
++
++_policies = {}
++_registry_lock = threading.Lock()
++
++def request(session, method, url, *, timeout, retries=3, **kwargs):
++    host = urlsplit(url).netloc
++    with _registry_lock:
++        policy = _policies.setdefault(host, HostPolicy())
++    with policy.lock:
++        if time.monotonic() < policy.blocked_until:
++            raise RuntimeError(f"{host}: source cooling down after an HTTP failure")
++        for attempt in range(max(1, retries)):
++            time.sleep(max(0, policy.next_request - time.monotonic()))
++            try:
++                policy.requests += 1
++                response = session.request(method, url, timeout=timeout, **kwargs)
++                policy.last_status = response.status_code
++                policy.next_request = time.monotonic() + request_spacing() + random.uniform(0, 0.25)
++                if response.status_code in {403, 429} or response.status_code >= 500:
++                    policy.failures += 1
++                    delay = min(1800, 60 * 2 ** min(policy.failures - 1, 5))
++                    retry_after = response.headers.get("Retry-After")
++                    if retry_after:
++                        try:
++                            delay = max(delay, float(retry_after))
++                        except ValueError:
++                            try:
++                                delay = max(delay, parsedate_to_datetime(retry_after).timestamp() - time.time())
++                            except (ValueError, TypeError, OverflowError):
++                                pass
++                    policy.blocked_until = time.monotonic() + delay
++                    response.raise_for_status()
++                response.raise_for_status()
++                policy.failures = 0
++                return response
++            except requests.HTTPError:
++                # Retrying a denied request immediately only worsens the block.
++                raise
++            except (requests.Timeout, requests.ConnectionError):
++                policy.failures += 1
++                policy.next_request = time.monotonic() + min(30, 2 ** attempt)
++                if attempt + 1 >= max(1, retries):
++                    policy.blocked_until = time.monotonic() + 60
++                    raise
++
++
++def policy_status():
++    with _registry_lock:
++        return {host: {'cooldown_seconds': max(0, round(p.blocked_until-time.monotonic())),
++                       'consecutive_failures': p.failures, 'requests': p.requests, 'last_http_status': p.last_status}
++                for host, p in _policies.items()}
++
++
++def request_spacing():
++    try:
++        return max(1.0, min(60.0, float(os.getenv('HMT_MIN_REQUEST_INTERVAL_SECONDS', '2'))))
++    except ValueError:
++        return 2.0
+--- a/templates/catalogue.html
++++ b/templates/catalogue.html
+@@ -89,8 +89,10 @@
+                 class="form-select"
+             >
+                 <option value="">All watches</option>
+-                <option value="true">In stock</option>
+-                <option value="false">Out of stock</option>
++                <option value="available">In stock</option>
++                <option value="coming_soon">Coming soon</option>
++                <option value="out_of_stock">Out of stock</option>
++                <option value="unknown">Unknown</option>
+             </select>
+         </div>
+ 
+@@ -483,7 +485,7 @@
+         if (catalogueState.stock) {
+ 
+             params.set(
+-                "in_stock",
++                "availability",
+                 catalogueState.stock
+             );
+ 
+@@ -674,7 +676,11 @@
+ 
+     let stockText;
+ 
+-    if (!watch.in_stock) {
++    if (watch.availability === "coming_soon") {
++        stockText = "Coming soon";
++    } else if (watch.availability === "unknown") {
++        stockText = "Unknown";
++    } else if (!watch.in_stock) {
+ 
+         stockText =
+             "Out of stock";
+--- a/templates/settings.html
++++ b/templates/settings.html
+@@ -236,6 +236,7 @@
+                     <input id="alert-new-products" type="checkbox" ${alertConfig.new_products_only ? "checked" : ""}>
+                     New watch
+                 </label>
++                <label><input id="alert-coming-soon" type="checkbox" ${alertConfig.coming_soon !== false ? "checked" : ""}> Coming soon</label>
+                 <label style="display:flex;align-items:center;gap:9px;font-weight:600;">
+                     <input id="alert-back-in-stock" type="checkbox" ${alertConfig.back_in_stock ? "checked" : ""}>
+                     Back in stock
+@@ -532,6 +533,7 @@
+ 
+     const payload = {
+         new_products: document.getElementById("alert-new-products").checked,
++        coming_soon: document.getElementById("alert-coming-soon").checked,
+         back_in_stock: document.getElementById("alert-back-in-stock").checked,
+         price_changes: document.getElementById("alert-price-changes").checked,
+         out_of_stock: document.getElementById("alert-out-of-stock").checked,
+--- a/tests/test_notifier.py
++++ b/tests/test_notifier.py
+@@ -48,7 +48,7 @@
+     )
+ 
+ 
+-def test_watch_alert_sends_image_before_details(tmp_path):
++def test_urgent_alert_sends_text_without_waiting_for_image(tmp_path):
+     db = Database(str(tmp_path / "test.db"))
+     notifier = TelegramNotifier(
+         db,
+@@ -69,13 +69,12 @@
+ 
+     call = session.calls[0]
+ 
+-    assert call["url"].endswith("/sendPhoto")
++    assert call["url"].endswith("/sendMessage")
+     assert call["data"]["chat_id"] == "chat"
+-    assert call["data"]["photo"] == "https://example.com/gandaberunda.jpg"
+-    assert "<b>HMT Men Gandaberunda</b>" in call["data"]["caption"]
+-    assert "Source:" in call["data"]["caption"]
+-    assert "Price:" in call["data"]["caption"]
+-    assert "Stock:" in call["data"]["caption"]
++    assert "<b>HMT Men Gandaberunda</b>" in call["data"]["text"]
++    assert "Source:" in call["data"]["text"]
++    assert "Price:" in call["data"]["text"]
++    assert "Stock:" in call["data"]["text"]
+ 
+ 
+ def test_watch_without_image_falls_back_to_text(tmp_path):
+--- a/tests/test_priority_scheduler.py
++++ b/tests/test_priority_scheduler.py
+@@ -0,0 +1,63 @@
++from dataclasses import replace
++from unittest.mock import Mock
++from config import config
++from database import Database
++from priority_scheduler import PriorityScheduler, PriorityTracker
++from tracker import Tracker, TrackerRunResult
++from tests.test_tracker import make_watch, make_matching_rule
++
++
++def test_workers_have_distinct_execution_locks_and_source_configs(tmp_path):
++    db = Database(tmp_path/'test.db')
++    scheduler = PriorityScheduler(Tracker(db), database=db)
++    a,b = scheduler.workers.values()
++    assert a._execution_lock is not b._execution_lock
++    assert len(a.tracker.config.sources) == len(b.tracker.config.sources) == 1
++    assert a.tracker.config.sources != b.tracker.config.sources
++    a._execution_lock.acquire()
++    try:
++        b.tracker.run = Mock(return_value=TrackerRunResult(run_id=1, success=True))
++        assert b.run_now().success
++    finally:
++        a._execution_lock.release()
++
++
++def test_priority_without_rules_skips_source(tmp_path):
++    tracker = PriorityTracker(Database(tmp_path/'test.db'))
++    tracker.mode = 'priority'
++    tracker._scrape_source = Mock()
++    result = tracker._run_source('hmt.store', rules=[], seed_only=False, alert_callback=None)
++    assert result.success
++    tracker._scrape_source.assert_not_called()
++
++
++def test_discovery_then_priority_and_failed_discovery_retries(tmp_path, monkeypatch):
++    tracker = PriorityTracker(Database(tmp_path/'test.db'))
++    monkeypatch.setattr(Tracker, 'run', lambda *a, **k: TrackerRunResult(run_id=1, success=True))
++    tracker.run()
++    assert tracker.mode == 'discovery'
++    tracker.run()
++    assert tracker.mode == 'priority'
++    tracker.discovery_due = 0
++    monkeypatch.setattr(Tracker, 'run', lambda *a, **k: TrackerRunResult(run_id=1, success=False))
++    tracker.run()
++    assert tracker.discovery_due == 0
++
++
++def test_priority_persists_only_matching_watches(tmp_path):
++    db = Database(tmp_path/'test.db')
++    tracker = PriorityTracker(db)
++    tracker.mode = 'priority'
++    watch = make_watch();watch.name = 'Unrelated'; watch.model_number = None; watch.sku = None
++    from tracker import SourceRunResult
++    tracker._process_watch(watch, is_new=True, rules=[make_matching_rule()], seed_only=False,
++                           result=SourceRunResult(source=watch.source), alert_callback=None)
++    assert db.count_watches() == 0
++
++
++def test_status_exposes_each_source_and_cooldowns(tmp_path):
++    db = Database(tmp_path/'test.db')
++    scheduler = PriorityScheduler(Tracker(db), database=db)
++    status = scheduler.status()
++    assert set(status['sources']) == {'hmt.in', 'hmt.store'}
++    assert 'http_hosts' in status
+--- a/tests/test_reliability.py
++++ b/tests/test_reliability.py
+@@ -0,0 +1,166 @@
++import json
++import sqlite3
++from dataclasses import replace
++from types import SimpleNamespace
++from unittest.mock import Mock
++
++import pytest
++import requests
++from bs4 import BeautifulSoup
++from config import config, get_source
++from database import Database
++from models import Watch
++from notifier import TelegramNotifier
++from scheduler import TrackerScheduler
++from scrapers import http_policy
++from scrapers.hmt_official import OfficialHMTScraper
++from scrapers.hmt_store import HMTStoreScraper
++from tests.test_notifier import FakeSession
++from tests.test_tracker import make_watch, make_matching_rule, process_existing_watch
++from tracker import Tracker
++
++
++def db_at(tmp_path):
++    return Database(tmp_path / 'test.db')
++
++
++def test_coming_soon_wins_over_buy_control_and_roundtrips(tmp_path):
++    scraper = OfficialHMTScraper(get_source('hmt.in'))
++    card = BeautifulSoup('''<div class="bc_p_item"><a class="bc_p_name">HMT Test</a>
++      <a class="bc_p_img" href="product_overview?id=abc"></a><span>RS. 1000</span>
++      <div class="outofstock">Coming Soon</div><button onclick="add_cart(123,1)" prodqty="4"></button></div>''', 'html.parser').div
++    watch = scraper._parse_card(card)
++    assert watch.availability == 'coming_soon'
++    assert not watch.in_stock
++    db = db_at(tmp_path)
++    db.save_watch(watch)
++    assert db.get_watch(watch.id).display_stock == 'Coming soon'
++    watch.availability = 'available'; watch.in_stock = True
++    db.save_watches([watch])
++    assert db.get_watch(watch.id).availability == 'available'
++
++
++def test_legacy_database_migration_keeps_watch_and_rule(tmp_path):
++    db = db_at(tmp_path)
++    db.save_watch(make_watch())
++    db.save_tracking_rule(make_matching_rule())
++    with db.connection() as conn:
++        conn.execute('ALTER TABLE watches DROP COLUMN availability')
++    db = db_at(tmp_path)
++    assert db.get_watch('watch-1').availability == 'available'
++    assert db.get_tracking_rules()[0].id == 'rule-1'
++
++
++def test_coming_soon_transition_alert_and_then_back_in_stock(tmp_path):
++    db = db_at(tmp_path)
++    tracker = Tracker(db, tracker_config=replace(config, alert_back_in_stock=True))
++    db.save_watch(make_watch(in_stock=False))
++    coming = make_watch(in_stock=False); coming.availability = 'coming_soon'
++    process_existing_watch(db, tracker, coming)
++    process_existing_watch(db, tracker, coming)
++    process_existing_watch(db, tracker, make_watch())
++    assert [x['alert_type'] for x in reversed(db.get_alerts())] == ['coming_soon', 'back_in_stock']
++
++
++def test_unknown_stock_does_not_generate_false_oos(tmp_path):
++    db = db_at(tmp_path)
++    tracker = Tracker(db, tracker_config=replace(config, alert_out_of_stock=True))
++    db.save_watch(make_watch())
++    unknown = make_watch(in_stock=False); unknown.availability = 'unknown'
++    process_existing_watch(db, tracker, unknown)
++    assert db.get_watch('watch-1').in_stock
++    assert db.get_alerts() == []
++
++
++@pytest.mark.parametrize('status', [403, 429, 503])
++def test_http_block_stops_retries_and_survives_new_sessions(monkeypatch, status):
++    http_policy._policies.clear()
++    monkeypatch.setattr(http_policy.time, 'sleep', lambda _: None)
++    response = requests.Response(); response.status_code = status
++    response.headers['Retry-After'] = '600'
++    session = Mock(); session.request.return_value = response
++    with pytest.raises(requests.HTTPError):
++        http_policy.request(session, 'GET', 'https://test.example/p', timeout=2, retries=3)
++    with pytest.raises(RuntimeError, match='cooling down'):
++        http_policy.request(Mock(), 'GET', 'https://test.example/q', timeout=2)
++    assert session.request.call_count == 1
++    http_policy._policies.clear()
++
++
++def test_outbox_sends_snapshot_even_if_current_stock_changed(tmp_path):
++    db = db_at(tmp_path)
++    watch = make_watch(); db.save_watch(watch)
++    db.create_alert(watch=watch, alert_type='back_in_stock')
++    watch.in_stock = False; watch.availability = 'out_of_stock'; db.save_watch(watch)
++    notifier = TelegramNotifier(db, bot_token='token', chat_id='chat')
++    notifier._session = FakeSession()
++    assert notifier.deliver_due() == 1
++    text = notifier._session.calls[0]['data']['text']
++    assert 'Back in Stock' in text and '5 available' in text
++    assert db.get_alerts()[0]['status'] == 'sent'
++
++
++def test_outbox_failure_is_deferred(tmp_path):
++    db = db_at(tmp_path)
++    watch = make_watch(); db.save_watch(watch)
++    db.create_alert(watch=watch, alert_type='back_in_stock')
++    notifier = TelegramNotifier(db, bot_token='token', chat_id='chat')
++    notifier._session = Mock(); notifier._session.post.side_effect = requests.Timeout()
++    assert notifier.deliver_due() == 0
++    assert notifier.deliver_due() == 0
++    assert notifier._session.post.call_count == 1
++    assert db.get_alerts()[0]['attempts'] == 1
++
++
++def test_telegram_retry_after_blocks_other_items(tmp_path):
++    notifier = TelegramNotifier(db_at(tmp_path), bot_token='token', chat_id='chat')
++    response = Mock(status_code=429)
++    response.json.return_value = {'parameters': {'retry_after': 600}}
++    with pytest.raises(RuntimeError, match='wait 600'):
++        notifier._check_rate_limit(response)
++    with pytest.raises(RuntimeError, match='cooldown'):
++        notifier._pace()
++
++
++@pytest.mark.parametrize(('duration', 'expected'), [(20, [0, 60, 120]), (80, [0, 120, 240])])
++def test_scheduler_start_cadence_and_no_catchup(monkeypatch, duration, expected):
++    import scheduler as module
++    now = [0.0]; starts = []
++    scheduler = TrackerScheduler(Mock(), interval_seconds=60)
++    class Event:
++        stopped = False
++        def is_set(self): return self.stopped
++        def wait(self, seconds): now[0] += seconds
++    event = Event(); scheduler._stop_event = event
++    monkeypatch.setattr(module.time, 'monotonic', lambda: now[0])
++    def run(_):
++        starts.append(now[0]); now[0] += duration
++        if len(starts) == 3: event.stopped = True
++    scheduler._run_safely = run
++    scheduler._worker(True)
++    assert starts == expected
++
++
++def test_store_streams_before_next_page_and_guards_repeating_pages():
++    scraper = HMTStoreScraper(base_url='https://example.com', page_size=1)
++    seen = []
++    def fetch(**kwargs):
++        if kwargs['offset'] == 1:
++            assert seen == ['watch-1']
++            return []
++        return [{}]
++    scraper._fetch_page = fetch
++    scraper._parse_product = lambda _: make_watch()
++    assert len(scraper.scrape(on_watch=lambda w: seen.append(w.id))) == 1
++    scraper._fetch_page = lambda **_: [{}]
++    with pytest.raises(RuntimeError, match='no progress'):
++        scraper.scrape()
++
++
++def test_ambiguous_untracked_stock_does_not_request_details():
++    scraper = HMTStoreScraper(base_url='https://example.com')
++    scraper.should_verify = lambda *_: False
++    scraper._fetch_product_detail = Mock()
++    scraper._stock({'currentStock': 0, 'additionalAttributes': {'isOOS': False}}, product_id='123')
++    assert scraper._stock_uncertain
++    scraper._fetch_product_detail.assert_not_called()
+--- a/tracker.py
++++ b/tracker.py
+@@ -2,6 +2,7 @@
+ 
+ import logging
+ import threading
++from concurrent.futures import ThreadPoolExecutor
+ from datetime import datetime, timedelta, timezone
+ from dataclasses import dataclass, field
+ from typing import Callable, Iterable
+@@ -192,9 +193,12 @@
+         # Recover abandoned records before creating the new run record.
+         # This keeps the run history accurate after a process/container
+         # restart without touching a scrape that may still be active.
+-        self._recover_stale_runs()
+-
+-        run_id = self.db.start_scrape_run()
++        try:
++            self._recover_stale_runs()
++            run_id = self.db.start_scrape_run()
++        except Exception:
++            self._run_lock.release()
++            raise
+ 
+         result = TrackerRunResult(
+             run_id=run_id,
+@@ -215,14 +219,14 @@
+ 
+             result.first_run_seed = first_run
+ 
+-            for source_config in enabled_sources():
+-                source_result = self._run_source(
+-                    source_config.name,
+-                    rules=rules,
+-                    seed_only=first_run,
+-                    alert_callback=alert_callback,
+-                )
+-
++            sources = list(self.config.sources)
++            with ThreadPoolExecutor(max_workers=2) as pool:
++                futures = [pool.submit(
++                    self._run_source, source.name, rules=rules,
++                    seed_only=first_run, alert_callback=alert_callback,
++                ) for source in sources if source.enabled]
++                source_results = [future.result() for future in futures]
++            for source_result in source_results:
+                 result.sources.append(
+                     source_result
+                 )
+@@ -340,9 +344,20 @@
+             return result
+ 
+         try:
+-            watches = self._scrape_source(
+-                source
+-            )
++            processed_ids: set[str] = set()
++            def process_discovered(watch: Watch) -> None:
++                if watch.id in processed_ids:
++                    return
++                processed_ids.add(watch.id)
++                is_new = not self.db.watch_exists(watch.id)
++                if is_new:
++                    result.new_products += 1
++                self._process_watch(
++                    watch, is_new=is_new, rules=rules, seed_only=seed_only,
++                    result=result, alert_callback=alert_callback,
++                )
++
++            watches = self._scrape_source(source, on_watch=process_discovered)
+ 
+             if not watches:
+                 raise RuntimeError(
+@@ -372,21 +387,7 @@
+             )
+ 
+             for watch in watches:
+-                is_new = not self.db.watch_exists(
+-                    watch.id
+-                )
+-
+-                if is_new:
+-                    result.new_products += 1
+-
+-                self._process_watch(
+-                    watch,
+-                    is_new=is_new,
+-                    rules=rules,
+-                    seed_only=seed_only,
+-                    result=result,
+-                    alert_callback=alert_callback,
+-                )
++                process_discovered(watch)
+ 
+             return result
+ 
+@@ -410,6 +411,7 @@
+     def _scrape_source(
+         self,
+         source: str,
++        on_watch=None,
+     ) -> list[Watch]:
+         """Construct the appropriate scraper and execute it."""
+ 
+@@ -440,7 +442,24 @@
+                 f"No scraper registered for source: {source}"
+             )
+ 
+-        return scraper.scrape()
++        if source == "hmt.store":
++            rules = self.db.get_tracking_rules(enabled_only=True)
++            def should_verify(product, product_id):
++                probe = Watch.create(
++                    id=str(product_id), source=source,
++                    name=str(product.get("name") or ""),
++                    sku=str(product.get("sku") or ""),
++                    product_url="", in_stock=False,
++                )
++                return any(rule.matches(probe) for rule in rules)
++            scraper.should_verify = should_verify
++
++        try:
++            if source == "hmt.store":
++                return scraper.scrape(on_watch=on_watch)
++            return scraper.scrape()
++        finally:
++            scraper.session.close()
+ 
+     # ------------------------------------------------------------------
+     # Watch processing
+@@ -523,14 +542,24 @@
+ 
+         existing = None if is_new else self.db.get_watch(watch.id)
+ 
++        unknown_observation = watch.availability == "unknown"
++        previous_stock_check = existing.last_stock_check if existing else watch.last_stock_check
++        if unknown_observation and existing is not None:
++            watch.availability = existing.availability
++            watch.in_stock = existing.in_stock
++            watch.stock_count = existing.stock_count
++
+         # Capture previous values BEFORE updating the catalogue.
+         was_in_stock = existing.in_stock if existing is not None else None
+         previous_price = existing.price if existing is not None else None
++        previous_availability = existing.availability if existing else None
+ 
+         if existing is None:
+             self.db.save_watch(watch)
+         else:
+             existing.update_from(watch)
++            if unknown_observation:
++                existing.last_stock_check = previous_stock_check
+             self.db.save_watch(existing)
+ 
+         matching_rules = [
+@@ -543,7 +572,13 @@
+         alert_type: str | None = None
+         should_alert = False
+ 
+-        if is_new:
++        if unknown_observation:
++            return
++
++        if watch.availability == "coming_soon" and previous_availability != "coming_soon":
++            should_alert = self._alert_enabled("coming_soon", True)
++            alert_type = "coming_soon"
++        elif is_new:
+             # A newly discovered tracked watch must alert even during the
+             # initial catalogue seed. This is intentionally independent of
+             # the UI's "silent seed" setting for untracked watches.
+@@ -552,18 +587,14 @@
+                     "new_products",
+                     self.config.alert_new_products_only,
+                 )
+-                and watch.in_stock
+-                and self._alert_enabled(
+-                    "only_when_in_stock",
+-                    self.config.alert_only_when_in_stock,
+-                )
++                and (watch.in_stock or not self._setting_bool("alert_only_when_in_stock", self.config.alert_only_when_in_stock))
+             )
+             alert_type = "new"
+ 
+         else:
+             # Stock transitions have priority over price changes so one
+             # scrape does not produce multiple Telegram alerts for a watch.
+-            if was_in_stock is True and not watch.in_stock:
++            if previous_availability != "out_of_stock" and watch.availability == "out_of_stock":
+                 should_alert = self._alert_enabled(
+                     "out_of_stock",
+                     self.config.alert_out_of_stock,
+@@ -575,10 +606,6 @@
+                     self._alert_enabled(
+                         "back_in_stock",
+                         self.config.alert_back_in_stock,
+-                    )
+-                    and self._setting_bool(
+-                        "only_when_in_stock",
+-                        self.config.alert_only_when_in_stock,
+                     )
+                 )
+                 alert_type = "back_in_stock"

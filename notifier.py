@@ -3,13 +3,16 @@ from __future__ import annotations
 import html
 import logging
 import threading
+import time
+import json
+from types import SimpleNamespace
 from typing import Any
 
 import requests
 
 from config import config
 from database import Database
-from models import AlertState
+from models import AlertState, Watch
 from tracker import AlertCandidate
 
 
@@ -43,6 +46,74 @@ class TelegramNotifier:
 
         self._session = requests.Session()
         self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._stop = threading.Event()
+        self._thread = None
+        self._next_send = 0.0
+        self._telegram_blocked_until = 0.0
+
+    def enqueue_candidate(self, candidate: AlertCandidate) -> None:
+        # Tracker already committed the alert to SQLite: wake the outbox worker.
+        self._wake.set()
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._worker, name="telegram-outbox", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._wake.set()
+        if self._thread:
+            self._thread.join(timeout=self.timeout + 2)
+
+    def _worker(self) -> None:
+        while not self._stop.is_set():
+            if self.enabled:
+                try:
+                    self.deliver_due()
+                except Exception:
+                    logger.exception("Telegram outbox iteration failed")
+            self._wake.wait(1)
+            self._wake.clear()
+
+    def deliver_due(self) -> int:
+        """One durable outbox item at a time; stock alerts take priority."""
+        with self._lock:
+            if time.monotonic() < self._telegram_blocked_until:
+                return 0
+            with self.db.connection() as connection:
+                row = connection.execute("""
+                    SELECT * FROM alerts
+                    WHERE status IN ('pending', 'failed') AND next_attempt_at <= ?
+                    ORDER BY CASE WHEN alert_type IN ('back_in_stock','new','tracked') THEN 0 ELSE 1 END,
+                             created_at, id LIMIT 1
+                """, (time.time(),)).fetchone()
+            if row is None:
+                return 0
+            alert = dict(row)
+            try:
+                self._send_stored(alert)
+                self.db.mark_alert_sent(int(alert["id"]))
+                self._record_alert_state(str(alert["watch_id"]))
+                return 1
+            except Exception as exc:
+                self.db.mark_alert_failed(int(alert["id"]), str(exc))
+                delay = min(1800, 5 * 2 ** min(int(alert["attempts"]), 9))
+                with self.db.connection() as connection:
+                    connection.execute("UPDATE alerts SET attempts=attempts+1, next_attempt_at=? WHERE id=?",
+                                       (time.time() + delay, alert["id"]))
+                logger.warning("Telegram delivery failed for alert %s; retry deferred", alert["id"])
+                return 0
+
+    def _send_stored(self, alert: dict[str, Any]) -> dict[str, Any]:
+        # Never turn an old availability event into a message about current stock.
+        if alert.get("snapshot"):
+            watch = Watch.from_dict(json.loads(alert["snapshot"]))
+            return self._send_watch_message(watch, alert_type=str(alert["alert_type"]))
+        return self._send_message(self._format_stored_alert(alert))
 
     @property
     def enabled(self) -> bool:
@@ -95,7 +166,7 @@ class TelegramNotifier:
             except Exception as exc:
                 self.db.mark_alert_failed(
                     alert_id,
-                    error_message=str(exc),
+                    error=str(exc),
                 )
 
                 logger.exception(
@@ -163,16 +234,7 @@ class TelegramNotifier:
                 alert_id = int(alert["id"])
 
                 try:
-                    watch = self.db.get_watch(str(alert["watch_id"]))
-
-                    if watch is not None:
-                        self._send_watch_message(
-                            watch,
-                            alert_type=str(alert.get("alert_type") or "tracked"),
-                        )
-                    else:
-                        message = self._format_stored_alert(alert)
-                        self._send_message(message)
+                    self._send_stored(alert)
 
                     self.db.mark_alert_sent(alert_id)
 
@@ -191,7 +253,7 @@ class TelegramNotifier:
 
                     self.db.mark_alert_failed(
                         alert_id,
-                        error_message=str(exc),
+                        error=str(exc),
                     )
 
                     logger.exception(
@@ -249,13 +311,15 @@ class TelegramNotifier:
 
         image_url = getattr(watch, "image_url", None)
 
-        if image_url:
+        if image_url and alert_type not in {"back_in_stock", "new", "tracked"}:
             try:
                 return self._send_photo(
                     image_url,
                     caption=message,
                 )
             except Exception as exc:
+                if time.monotonic() < self._telegram_blocked_until:
+                    raise
                 # If the image URL is no longer reachable or Telegram
                 # rejects it, fall back to the text alert rather than
                 # losing the notification entirely.
@@ -267,6 +331,22 @@ class TelegramNotifier:
                 )
 
         return self._send_message(message)
+
+    def _pace(self) -> None:
+        if time.monotonic() < self._telegram_blocked_until:
+            raise RuntimeError("Telegram flood-control cooldown active")
+        time.sleep(max(0, self._next_send - time.monotonic()))
+        self._next_send = time.monotonic() + (3.1 if str(self.chat_id).startswith("-") else 1.1)
+
+    def _check_rate_limit(self, response) -> None:
+        if getattr(response, "status_code", None) != 429:
+            return
+        try:
+            delay = max(1, int(response.json().get("parameters", {}).get("retry_after", 60)))
+        except (ValueError, TypeError):
+            delay = 60
+        self._telegram_blocked_until = time.monotonic() + delay
+        raise RuntimeError(f"Telegram flood control: wait {delay} seconds")
 
     def _send_photo(
         self,
@@ -280,6 +360,7 @@ class TelegramNotifier:
                 "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."
             )
 
+        self._pace()
         response = self._session.post(
             f"{self.api_url}/sendPhoto",
             data={
@@ -291,6 +372,7 @@ class TelegramNotifier:
             timeout=self.timeout,
         )
 
+        self._check_rate_limit(response)
         response.raise_for_status()
 
         try:
@@ -316,6 +398,7 @@ class TelegramNotifier:
                 "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."
             )
 
+        self._pace()
         response = self._session.post(
             f"{self.api_url}/sendMessage",
             data={
@@ -327,6 +410,7 @@ class TelegramNotifier:
             timeout=self.timeout,
         )
 
+        self._check_rate_limit(response)
         response.raise_for_status()
 
         try:
@@ -359,6 +443,7 @@ class TelegramNotifier:
             "back_in_stock": "🟢 <b>Back in Stock</b>",
             "price_changed": "💰 <b>Price Changed</b>",
             "out_of_stock": "🔴 <b>Out of Stock</b>",
+            "coming_soon": "🟠 <b>Coming Soon</b>",
             "repeat": "🔔 <b>HMT Tracker Alert</b>",
             "new": "🆕 <b>New HMT Watch Found</b>",
         }
@@ -372,6 +457,7 @@ class TelegramNotifier:
             "",
             f"<b>{name}</b>",
             f"Source: {source}",
+            "Checked: " + html.escape(str(getattr(watch, "last_stock_check", ""))),
         ]
 
         if alert_type == "out_of_stock":
@@ -413,7 +499,7 @@ class TelegramNotifier:
         because the catalogue may have changed since the original alert.
         """
         name = html.escape(
-            str(alert.get("watch_name") or "Unknown watch")
+            str(alert.get("name") or alert.get("watch_name") or "Unknown watch")
         )
 
         source = html.escape(
@@ -427,15 +513,27 @@ class TelegramNotifier:
             f"Source: {source}",
         ]
 
+        event_type = str(alert.get("alert_type") or "")
+        lines[0] = {
+            "back_in_stock": "🟢 <b>Back in Stock — recorded event</b>",
+            "out_of_stock": "🔴 <b>Out of Stock — recorded event</b>",
+            "coming_soon": "🟠 <b>Coming Soon — recorded event</b>",
+        }.get(event_type, "⌚ <b>HMT Watch Alert — recorded event</b>")
+        if alert.get("created_at"):
+            lines.append("Detected: " + html.escape(str(alert["created_at"])))
         stock_count = alert.get("stock_count")
 
-        if stock_count is not None:
+        if event_type == "coming_soon":
+            stock_text = "Coming soon"
+        elif event_type == "out_of_stock":
+            stock_text = "Out of stock"
+        elif stock_count is not None:
             try:
                 stock_text = f"{int(stock_count)} available"
             except (TypeError, ValueError):
                 stock_text = str(stock_count)
         else:
-            stock_text = "In stock"
+            stock_text = "Quantity not supplied at detection"
 
         lines.append(f"Stock: <b>{html.escape(stock_text)}</b>")
 
@@ -458,6 +556,8 @@ class TelegramNotifier:
 
     @staticmethod
     def _format_stock(watch: Any) -> str:
+        if getattr(watch, "availability", None) == "coming_soon":
+            return "Coming soon"
         if not getattr(watch, "in_stock", False):
             return "Out of stock"
 

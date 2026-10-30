@@ -147,6 +147,9 @@ class TrackerScheduler:
             thread.join(timeout=timeout)
 
         with self._lock:
+            if thread and thread.is_alive():
+                logger.warning("Scheduler stop requested; active execution is still finishing")
+                return
             self._running = False
             self._thread = None
 
@@ -258,25 +261,21 @@ class TrackerScheduler:
         exception must not kill the 60-second scheduler permanently.
         """
         try:
-            if run_immediately:
-                self._run_safely("startup")
-
+            next_due = time.monotonic() if run_immediately else time.monotonic() + self._get_interval_seconds()
             while not self._stop_event.is_set():
+                now = time.monotonic()
+                if now < next_due:
+                    self._stop_event.wait(min(1.0, next_due - now))
+                    continue
                 interval = self._get_interval_seconds()
-
-                if self._is_night_mode():
-                    logger.debug("Night-time rest mode active; scheduled scrape skipped.")
-                    self._stop_event.wait(min(60, interval))
-                    continue
-
-                self._stop_event.wait(interval)
-                if self._stop_event.is_set():
-                    break
-
-                if self._is_night_mode():
-                    continue
-
-                self._run_safely("scheduled")
+                if not self._is_night_mode():
+                    self._run_safely("scheduled")
+                next_due += interval
+                now = time.monotonic()
+                if next_due <= now:
+                    missed = int((now - next_due) // interval) + 1
+                    logger.warning("Tracker exceeded cadence; skipping %s missed ticks", missed)
+                    next_due += missed * interval
 
         except Exception:
             # This should only be reached for an unexpected scheduler

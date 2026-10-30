@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urljoin
 
 import requests
+from scrapers.http_policy import request as paced_request
 from bs4 import BeautifulSoup
 
 from config import SourceConfig
@@ -104,38 +105,8 @@ class OfficialHMTScraper:
     ) -> requests.Response:
         """Perform an HTTP request with simple retry handling."""
 
-        last_error: Exception | None = None
-
-        for attempt in range(1, self.retries + 1):
-            try:
-                response = self.session.request(
-                    method,
-                    url,
-                    timeout=self.timeout_seconds,
-                    **kwargs,
-                )
-
-                response.raise_for_status()
-
-                return response
-
-            except requests.RequestException as exc:
-                last_error = exc
-
-                logger.warning(
-                    "HMT request failed "
-                    "(attempt %s/%s): %s %s: %s",
-                    attempt,
-                    self.retries,
-                    method,
-                    url,
-                    exc,
-                )
-
-        raise RuntimeError(
-            f"HMT request failed after {self.retries} attempts: "
-            f"{method} {url}"
-        ) from last_error
+        return paced_request(self.session, method, url,
+                             timeout=self.timeout_seconds, retries=self.retries, **kwargs)
 
     def _post_filter_products(self) -> str:
         """Fetch the main filtered product listing."""
@@ -320,6 +291,7 @@ class OfficialHMTScraper:
             product_url=product_url,
             image_url=image_url,
             in_stock=in_stock,
+            availability=self._availability(card, in_stock),
             stock_count=stock_count,
             category=None,
             collection=None,
@@ -329,6 +301,14 @@ class OfficialHMTScraper:
     # ------------------------------------------------------------------
     # Stock
     # ------------------------------------------------------------------
+
+    def _availability(self, card: Any, in_stock: bool) -> str:
+        text = self._clean_text(card.get_text(" ", strip=True)).lower()
+        if "coming soon" in text:
+            return "coming_soon"
+        if "out of stock" in text or "sold out" in text or card.select_one(".outofstock"):
+            return "out_of_stock"
+        return "available" if in_stock else "unknown"
 
     def _parse_stock(
         self,
@@ -343,6 +323,10 @@ class OfficialHMTScraper:
           purchasable products.
         - `add_cart(id, '1')` is present on purchasable cards.
         """
+
+        text = self._clean_text(card.get_text(" ", strip=True)).lower()
+        if any(label in text for label in ("coming soon", "out of stock", "sold out")):
+            return False, 0
 
         if card.select_one(".outofstock") is not None:
             return False, 0

@@ -63,12 +63,14 @@ class HMTStoreScraper(BaseScraper):
 
         self.shop_id = shop_id
         self.page_size = page_size
+        self.should_verify = None
+        self._stock_uncertain = False
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def scrape(self) -> list[Watch]:
+    def scrape(self, on_watch=None) -> list[Watch]:
         """
         Fetch the complete catalogue from the store API.
 
@@ -85,6 +87,7 @@ class HMTStoreScraper(BaseScraper):
         offset = 0
 
         while True:
+            page_start_count = len(seen_ids)
             products = self._fetch_page(
                 offset=offset,
                 limit=self.page_size,
@@ -113,6 +116,8 @@ class HMTStoreScraper(BaseScraper):
 
                 seen_ids.add(identity)
                 watches.append(watch)
+                if on_watch is not None:
+                    on_watch(watch)
 
             logger.debug(
                 "HMT store page: offset=%s returned=%s total=%s",
@@ -120,6 +125,9 @@ class HMTStoreScraper(BaseScraper):
                 len(products),
                 len(watches),
             )
+
+            if len(seen_ids) == page_start_count:
+                raise RuntimeError("Store pagination made no progress; refusing an endless loop")
 
             if len(products) < self.page_size:
                 break
@@ -269,6 +277,7 @@ class HMTStoreScraper(BaseScraper):
         if selling_price is None:
             selling_price = mrp
 
+        self._stock_uncertain = False
         in_stock, stock = self._stock(
             product,
             product_id=product_id,
@@ -288,6 +297,7 @@ class HMTStoreScraper(BaseScraper):
             name=name,
             product_url=product_url,
             in_stock=in_stock,
+            availability="unknown" if self._stock_uncertain else None,
             stock_count=stock,
             sku=sku,
             price=selling_price,
@@ -401,6 +411,11 @@ class HMTStoreScraper(BaseScraper):
             return in_stock, stock_count
 
         if not product_id:
+            self._stock_uncertain = True
+            return in_stock, stock_count
+
+        if self.should_verify is not None and not self.should_verify(product, product_id):
+            self._stock_uncertain = True
             return in_stock, stock_count
 
         try:
@@ -426,6 +441,7 @@ class HMTStoreScraper(BaseScraper):
             )
 
         except Exception:
+            self._stock_uncertain = True
             logger.warning(
                 "Unable to verify HMT store stock detail for %s; "
                 "using bulk catalogue state.",

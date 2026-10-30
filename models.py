@@ -54,6 +54,15 @@ class Watch:
     # Last successful stock observation
     last_stock_check: str
 
+    availability: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.availability is None:
+            self.availability = "available" if self.in_stock else "out_of_stock"
+        if self.availability not in {"available", "out_of_stock", "coming_soon", "unknown"}:
+            raise ValueError(f"Invalid availability: {self.availability}")
+        self.in_stock = self.availability == "available"
+
     def to_dict(self) -> dict[str, Any]:
         """Convert the watch to a JSON/database-friendly dictionary."""
         return asdict(self)
@@ -72,6 +81,7 @@ class Watch:
         name: str,
         product_url: str,
         in_stock: bool,
+        availability: str | None = None,
         stock_count: int | None = None,
         model_number: str | None = None,
         sku: str | None = None,
@@ -98,6 +108,7 @@ class Watch:
             product_url=product_url,
             image_url=image_url,
             in_stock=in_stock,
+            availability=availability,
             stock_count=stock_count,
             category=category,
             collection=collection,
@@ -143,6 +154,7 @@ class Watch:
         if latest.gender:
             self.gender = latest.gender
 
+        self.availability = latest.availability
         self.in_stock = latest.in_stock
         self.stock_count = latest.stock_count
 
@@ -161,6 +173,10 @@ class Watch:
 
         We never invent a quantity when the source doesn't provide one.
         """
+        if self.availability == "coming_soon":
+            return "Coming soon"
+        if self.availability == "unknown":
+            return "Unknown"
         if not self.in_stock:
             return "Out of stock"
 

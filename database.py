@@ -257,6 +257,18 @@ class Database:
                 """
             )
 
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(watches)")}
+            if "availability" not in columns:
+                db.execute("ALTER TABLE watches ADD COLUMN availability TEXT")
+                db.execute("UPDATE watches SET availability = CASE WHEN in_stock = 1 THEN 'available' ELSE 'out_of_stock' END")
+            alert_columns = {row["name"] for row in db.execute("PRAGMA table_info(alerts)")}
+            for name, declaration in {
+                "snapshot": "TEXT", "attempts": "INTEGER NOT NULL DEFAULT 0",
+                "next_attempt_at": "REAL NOT NULL DEFAULT 0",
+            }.items():
+                if name not in alert_columns:
+                    db.execute(f"ALTER TABLE alerts ADD COLUMN {name} {declaration}")
+
     # ------------------------------------------------------------------
     # Watches / catalogue
     # ------------------------------------------------------------------
@@ -300,6 +312,7 @@ class Database:
         *,
         source: str | None = None,
         in_stock: bool | None = None,
+        availability: str | None = None,
         search: str | None = None,
         limit: int | None = None,
         offset: int = 0,
@@ -325,6 +338,10 @@ class Database:
         if in_stock is not None:
             query += " AND in_stock = ?"
             parameters.append(1 if in_stock else 0)
+
+        if availability is not None:
+            query += " AND availability = ?"
+            parameters.append(availability)
 
         if search:
             query += """
@@ -418,6 +435,7 @@ class Database:
                         mrp,
                         product_url,
                         image_url,
+                        availability,
                         in_stock,
                         stock_count,
                         category,
@@ -429,7 +447,7 @@ class Database:
                     )
                     VALUES (
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?
+                        ?, ?, ?, ?, ?, ?, ?
                     )
                     """,
                     self._watch_values(watch),
@@ -449,6 +467,7 @@ class Database:
                     mrp = COALESCE(?, mrp),
                     product_url = ?,
                     image_url = COALESCE(?, image_url),
+                    availability = ?,
                     in_stock = ?,
                     stock_count = ?,
                     category = COALESCE(?, category),
@@ -467,6 +486,7 @@ class Database:
                     watch.mrp,
                     watch.product_url,
                     watch.image_url,
+                    watch.availability,
                     int(watch.in_stock),
                     watch.stock_count,
                     watch.category,
@@ -513,7 +533,8 @@ class Database:
                             mrp,
                             product_url,
                             image_url,
-                            in_stock,
+                            availability,
+                        in_stock,
                             stock_count,
                             category,
                             collection,
@@ -524,7 +545,7 @@ class Database:
                         )
                         VALUES (
                             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                            ?, ?, ?, ?, ?, ?
+                            ?, ?, ?, ?, ?, ?, ?
                         )
                         """,
                         self._watch_values(watch),
@@ -545,7 +566,8 @@ class Database:
                         mrp = COALESCE(?, mrp),
                         product_url = ?,
                         image_url = COALESCE(?, image_url),
-                        in_stock = ?,
+                        availability = ?,
+                    in_stock = ?,
                         stock_count = ?,
                         category = COALESCE(?, category),
                         collection = COALESCE(?, collection),
@@ -563,7 +585,8 @@ class Database:
                         watch.mrp,
                         watch.product_url,
                         watch.image_url,
-                        int(watch.in_stock),
+                        watch.availability,
+                    int(watch.in_stock),
                         watch.stock_count,
                         watch.category,
                         watch.collection,
@@ -760,9 +783,9 @@ class Database:
                     status,
                     telegram_chat_id,
                     error,
-                    created_at
+                    created_at, snapshot
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     watch.id,
@@ -776,6 +799,7 @@ class Database:
                     telegram_chat_id,
                     error,
                     utc_now(),
+                    json.dumps(watch.to_dict()),
                 ),
             )
 
@@ -1348,6 +1372,7 @@ class Database:
             watch.mrp,
             watch.product_url,
             watch.image_url,
+            watch.availability,
             int(watch.in_stock),
             watch.stock_count,
             watch.category,
@@ -1373,6 +1398,7 @@ class Database:
             product_url=row["product_url"],
             image_url=row["image_url"],
             in_stock=bool(row["in_stock"]),
+            availability=row["availability"],
             stock_count=row["stock_count"],
             category=row["category"],
             collection=row["collection"],
