@@ -89,20 +89,20 @@ def test_http_block_stops_retries_and_survives_new_sessions(monkeypatch, status)
 
 def test_outbox_sends_snapshot_even_if_current_stock_changed(tmp_path):
     db = db_at(tmp_path)
-    watch = make_watch(); db.save_watch(watch)
+    watch = make_watch(); watch.image_url = "https://example.com/watch.jpg"; db.save_watch(watch)
     db.create_alert(watch=watch, alert_type='back_in_stock')
     watch.in_stock = False; watch.availability = 'out_of_stock'; db.save_watch(watch)
     notifier = TelegramNotifier(db, bot_token='token', chat_id='chat')
     notifier._session = FakeSession()
     assert notifier.deliver_due() == 1
-    text = notifier._session.calls[0]['data']['text']
-    assert 'Back in Stock' in text and '5 available' in text
+    text = notifier._session.calls[0]['data']['caption']
+    assert 'BACK IN STOCK' in text and 'Total stock: 5' in text
     assert db.get_alerts()[0]['status'] == 'sent'
 
 
 def test_outbox_failure_is_deferred(tmp_path):
     db = db_at(tmp_path)
-    watch = make_watch(); db.save_watch(watch)
+    watch = make_watch(); watch.image_url = "https://example.com/watch.jpg"; db.save_watch(watch)
     db.create_alert(watch=watch, alert_type='back_in_stock')
     notifier = TelegramNotifier(db, bot_token='token', chat_id='chat')
     notifier._session = Mock(); notifier._session.post.side_effect = requests.Timeout()

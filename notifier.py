@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import html
+import hashlib
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import logging
 import threading
 import time
@@ -310,27 +313,24 @@ class TelegramNotifier:
         message = self._format_watch(watch, alert_type=alert_type)
 
         image_url = getattr(watch, "image_url", None)
-
-        if image_url and alert_type not in {"back_in_stock", "new", "tracked"}:
-            try:
-                return self._send_photo(
-                    image_url,
-                    caption=message,
-                )
-            except Exception as exc:
-                if time.monotonic() < self._telegram_blocked_until:
-                    raise
-                # If the image URL is no longer reachable or Telegram
-                # rejects it, fall back to the text alert rather than
-                # losing the notification entirely.
-                logger.warning(
-                    "Telegram photo delivery failed for watch %s; "
-                    "falling back to text alert: %s",
-                    getattr(watch, "id", "unknown"),
-                    exc,
-                )
-
-        return self._send_message(message)
+        if not image_url:
+            current = self.db.get_watch(watch.id)
+            image_url = current.image_url if current else None
+        if not image_url:
+            raise RuntimeError("Watch image missing; photo alert retained for retry")
+        key = "telegram_photo_" + hashlib.sha256((self.bot_token + str(image_url)).encode()).hexdigest()
+        cached = self.db.get_setting(key, "")
+        try:
+            result = self._send_photo(cached or image_url, caption=message,
+                                      product_url=watch.product_url)
+        except requests.HTTPError as exc:
+            if cached and exc.response is not None and exc.response.status_code == 400:
+                self.db.set_setting(key, "")
+            raise
+        photos = result.get("result", {}).get("photo", [])
+        if photos and photos[-1].get("file_id"):
+            self.db.set_setting(key, photos[-1]["file_id"])
+        return result
 
     def _pace(self) -> None:
         if time.monotonic() < self._telegram_blocked_until:
@@ -353,6 +353,7 @@ class TelegramNotifier:
         image_url: str,
         *,
         caption: str,
+        product_url: str | None = None,
     ) -> dict[str, Any]:
         if not self.enabled:
             raise RuntimeError(
@@ -367,6 +368,7 @@ class TelegramNotifier:
                 "chat_id": self.chat_id,
                 "photo": str(image_url),
                 "caption": caption,
+                "reply_markup": json.dumps({"inline_keyboard": [[{"text": "View Product", "url": product_url}]]}) if product_url else "",
                 "parse_mode": "HTML",
             },
             timeout=self.timeout,
@@ -435,61 +437,36 @@ class TelegramNotifier:
         *,
         alert_type: str,
     ) -> str:
-        name = html.escape(str(watch.name or "Unknown watch"))
-        source = html.escape(self._source_label(watch.source))
-
         headings = {
-            "tracked": "⌚ <b>HMT Tracker Alert</b>",
-            "back_in_stock": "🟢 <b>Back in Stock</b>",
-            "price_changed": "💰 <b>Price Changed</b>",
-            "out_of_stock": "🔴 <b>Out of Stock</b>",
-            "coming_soon": "🟠 <b>Coming Soon</b>",
-            "repeat": "🔔 <b>HMT Tracker Alert</b>",
-            "new": "🆕 <b>New HMT Watch Found</b>",
+            "new": "🆕 NEW WATCH LISTED! 🎉", "coming_soon": "🕜 COMING SOON",
+            "out_of_stock": "❌ OUT OF STOCK", "back_in_stock": "✅ BACK IN STOCK! 🎉",
+            "price_changed": "💰 PRICE CHANGED", "tracked": "⌚ WATCH TRACKED",
+            "repeat": "🔔 STOCK UPDATE",
         }
-        heading = headings.get(
-            alert_type,
-            "⌚ <b>HMT Watch Alert</b>",
-        )
-
-        lines = [
-            heading,
-            "",
-            f"<b>{name}</b>",
-            f"Source: {source}",
-            "Checked: " + html.escape(str(getattr(watch, "last_stock_check", ""))),
-        ]
-
-        if alert_type == "out_of_stock":
-            lines.append("Stock: <b>Out of stock</b>")
-
-        if getattr(watch, "model_number", None):
-            model = html.escape(str(watch.model_number))
-            lines.append(f"Model: {model}")
-
-        if getattr(watch, "sku", None):
-            sku = html.escape(str(watch.sku))
-            lines.append(f"SKU: {sku}")
-
-        price = self._format_price(getattr(watch, "price", None))
-        if price:
-            lines.append(f"Price: {price}")
-
-        stock = self._format_stock(watch)
-
-        if stock and alert_type != "out_of_stock":
-            lines.append(f"Stock: <b>{html.escape(stock)}</b>")
-
-        if getattr(watch, "product_url", None):
-            url = html.escape(str(watch.product_url), quote=True)
-            lines.extend(
-                [
-                    "",
-                    f'🛒 <a href="{url}">View watch</a>',
-                ]
-            )
-
-        return "\n".join(lines)
+        name = str(watch.name or "Unknown watch")[:180]
+        series = getattr(watch, "collection", None)
+        if not series:
+            series = next((x for x in ("Kohinoor", "Tareeq", "Himalaya", "Sangam", "Stellar", "Janata", "Pilot", "Kedar", "Skeleton") if x.lower() in name.lower()), "Not supplied")
+        try:
+            dt = datetime.fromisoformat(watch.last_stock_check.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+            dt = dt.astimezone(ZoneInfo("Asia/Kolkata"))
+            detected = dt.strftime("%d %b %Y, %I:%M %p").replace("AM", "am").replace("PM", "pm")
+        except (ValueError, AttributeError):
+            detected = "Not supplied"
+        stock = "🕜 Coming Soon" if watch.availability == "coming_soon" else ("In stock" if watch.in_stock else "Out of stock")
+        count = watch.stock_count if watch.stock_count is not None else "Not supplied"
+        price = f"RS. {watch.price:g}" if watch.price is not None else "Not supplied"
+        site = {"hmt.in": "hmtwatches.in", "hmt.store": "hmtwatches.store"}.get(watch.source, watch.source)
+        esc = lambda value: html.escape(str(value))
+        return "\n".join([
+            "Status: <b>" + headings.get(alert_type, "⌚ WATCH UPDATE") + "</b>", "",
+            "Model: ⌚ <b>" + esc(name) + "</b>", "━━━━━━━━━━━━━",
+            "💰 Price: " + esc(price), "📦 Stock: " + stock,
+            "⌚ Series: " + esc(str(series)[:80]), "📊 Total stock: " + esc(count),
+            "🕐 Detected: " + esc(detected), "🌐 Website: " + esc(site),
+        ])
 
     def _format_stored_alert(self, alert: dict[str, Any]) -> str:
         """

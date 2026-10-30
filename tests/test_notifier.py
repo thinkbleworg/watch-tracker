@@ -1,5 +1,6 @@
 
 from types import SimpleNamespace
+import pytest
 
 from database import Database
 from models import Watch
@@ -48,7 +49,7 @@ def make_watch():
     )
 
 
-def test_urgent_alert_sends_text_without_waiting_for_image(tmp_path):
+def test_urgent_alert_sends_photo(tmp_path):
     db = Database(str(tmp_path / "test.db"))
     notifier = TelegramNotifier(
         db,
@@ -69,12 +70,12 @@ def test_urgent_alert_sends_text_without_waiting_for_image(tmp_path):
 
     call = session.calls[0]
 
-    assert call["url"].endswith("/sendMessage")
+    assert call["url"].endswith("/sendPhoto")
     assert call["data"]["chat_id"] == "chat"
-    assert "<b>HMT Men Gandaberunda</b>" in call["data"]["text"]
-    assert "Source:" in call["data"]["text"]
-    assert "Price:" in call["data"]["text"]
-    assert "Stock:" in call["data"]["text"]
+    assert "<b>HMT Men Gandaberunda</b>" in call["data"]["caption"]
+    assert "Website:" in call["data"]["caption"]
+    assert "Price:" in call["data"]["caption"]
+    assert "Stock:" in call["data"]["caption"]
 
 
 def test_watch_without_image_falls_back_to_text(tmp_path):
@@ -91,14 +92,9 @@ def test_watch_without_image_falls_back_to_text(tmp_path):
     watch = make_watch()
     watch.image_url = None
 
-    notifier._send_watch_message(
-        watch,
-        alert_type="repeat",
-    )
-
-    assert len(session.calls) == 1
-    assert session.calls[0]["url"].endswith("/sendMessage")
-    assert "<b>HMT Men Gandaberunda</b>" in session.calls[0]["data"]["text"]
+    with pytest.raises(RuntimeError, match="image missing"):
+        notifier._send_watch_message(watch, alert_type="repeat")
+    assert not session.calls
 
 
 def test_retry_uses_current_watch_image(tmp_path):

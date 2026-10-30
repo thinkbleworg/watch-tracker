@@ -1,3 +1,28 @@
+# Final pagination optimization
+
+Official catalogue requests now start at load_more_count=3. Since responses are cumulative, requests for counts 1 and 2 are skipped. If #loadMoreBtnData remains, count increases to 4, 5, etc., with existing pacing/cooldowns and a count-30 safety ceiling. This is not a hard three-page coverage cap.
+
+The frontend's availability_filter=-1 (Include out of Stock) remains enabled. The observed 58-product result used availability_filter=0; do not assume the broader filter has the same count or completes at 3. Coming Soon is explicitly parsed independently of this filter.
+
+Request fields: availability_filter=-1, brand_filter=, load_more_count=3, menu_val=. A session/CSRF initialization GET precedes the catalogue POST, so a complete count-3 response means one catalogue POST, not one total HTTP request.
+
+Validation: 60 tests passed. The cumulative 0-filter live check returned 27, 54, 58 products at counts 1, 2, 3, with no Load More at 3. Deployment and live Telegram delivery have not been performed here.
+
+# Image-first alert and catalogue repair
+
+This update supersedes the earlier text-first alert behavior.
+
+- Official discovery now follows the current frontend: session/CSRF initialization, availability_filter=-1, JSON html extraction and load-more pagination. A no-progress guard and 30-page ceiling report failure rather than silently claiming complete coverage.
+- New coming-soon products generate NEW WATCH LISTED with Coming Soon stock. Existing products changing to coming soon use a COMING SOON status. Existing tracking rules still determine which products generate alerts.
+- Every new-format stock alert uses sendPhoto with the requested caption and a View Product inline button. No automatic text fallback. Missing/unreachable images retain alerts for retry, which can delay delivery until the image becomes available.
+- Telegram photo file IDs are stored in SQLite per bot/image URL after successful delivery. Subsequent alerts reuse them without another origin image fetch. Invalid cached IDs on HTTP 400 are cleared for the next retry.
+- Timestamps use Asia/Kolkata; series is source-provided or inferred from known series names. Unknown quantities display Not supplied. Coming Soon does not invent a zero inventory quantity.
+- Latest catalogue image is used if an older alert snapshot lacks one. Existing legacy alerts without snapshots retain their old compatibility formatter.
+- Preserve live database and .env; restart one application worker after replacing code. A full discovery runs on startup. Source blocks still trigger cooldowns. No live Telegram test messages were sent.
+- Validation: 59 tests pass, including JSON/filter handling, later-page discovery, Telegram photo-ID reuse, inline product links and timezone formatting.
+
+Earlier upgrade notes (where they conflict, the update above takes precedence):
+
 # Reliability update — 30 October 2026
 
 ## Findings

@@ -77,20 +77,27 @@ class OfficialHMTScraper:
             RuntimeError: when the source cannot be scraped reliably.
         """
 
-        filter_html = self._post_filter_products()
-        all_products_html = self._get_all_products()
-
-        watches: dict[str, Watch] = {}
-
-        for html in (filter_html, all_products_html):
-            for watch in self._parse_product_cards(html):
-                watches[watch.id] = watch
-
+        page = self._request("GET", self.config.base_url + "/watches")
+        meta = BeautifulSoup(page.text, "html.parser").select_one('meta[name="csrf-token"]')
+        self._csrf = meta.get("content", "") if meta else ""
+        watches = {}
+        # HMT returns cumulative results. Start with three pages' worth,
+        # then extend only if the server advertises more results.
+        for count in range(3, 31):
+            html = self._post_filter_products(count)
+            parsed = self._parse_product_cards(html)
+            previous = len(watches)
+            watches.update({w.id: w for w in parsed})
+            soup = BeautifulSoup(html, "html.parser")
+            more = soup.select_one("#loadMoreBtnData")
+            if more is None:
+                break
+            if len(watches) == previous:
+                raise RuntimeError("Official catalogue pagination stopped making progress")
+        else:
+            raise RuntimeError("Official catalogue exceeded pagination safety limit")
         if not watches:
-            raise RuntimeError(
-                "HMT official source returned no parseable products."
-            )
-
+            raise RuntimeError("Official source returned no parseable products")
         return list(watches.values())
 
     # ------------------------------------------------------------------
@@ -108,7 +115,7 @@ class OfficialHMTScraper:
         return paced_request(self.session, method, url,
                              timeout=self.timeout_seconds, retries=self.retries, **kwargs)
 
-    def _post_filter_products(self) -> str:
+    def _post_filter_products(self, count=1) -> str:
         """Fetch the main filtered product listing."""
 
         url = urljoin(
@@ -116,24 +123,13 @@ class OfficialHMTScraper:
             "/filter_products",
         )
 
-        # These are intentionally conservative defaults.
-        #
-        # The website's frontend sends filtering/pagination information
-        # to /filter_products. Leaving the actual filters empty asks the
-        # server for the broad catalogue.
+        # -1 is the frontend's "Include out of Stock" value. Coming Soon
+        # also appears with 0, but 0 alone does not establish OOS coverage.
         data = {
-            "load_more_count": "0",
+            "load_more_count": str(count),
+            "availability_filter": "-1",
+            "brand_filter": "",
             "menu_val": "",
-            "price": "",
-            "availability": "",
-            "gender": "",
-            "discount": "",
-            "brand": "",
-            "strap_color": "",
-            "dial_color": "",
-            "function": "",
-            "collection": "",
-            "movement": "",
         }
 
         response = self._request(
@@ -142,11 +138,18 @@ class OfficialHMTScraper:
             data=data,
             headers={
                 "X-Requested-With": "XMLHttpRequest",
+                "X-CSRF-TOKEN": getattr(self, "_csrf", ""),
                 "Referer": self.config.base_url + "/watches",
             },
         )
 
-        return response.text
+        try:
+            payload = response.json()
+        except ValueError:
+            return response.text
+        if not isinstance(payload, dict) or not isinstance(payload.get("html"), str):
+            raise RuntimeError("Official catalogue JSON missing html field")
+        return payload["html"]
 
     def _get_all_products(self) -> str:
         """Fetch the site's all-products page."""
@@ -230,7 +233,7 @@ class OfficialHMTScraper:
             return None
 
         name = self._clean_text(
-            name_element.get_text(" ", strip=True)
+            name_element.get("title") or name_element.get_text(" ", strip=True)
         )
 
         if not name:
@@ -253,12 +256,12 @@ class OfficialHMTScraper:
             product_link.get("href", ""),
         )
 
-        image = card.select_one("img[src]")
+        image = card.select_one("img[data-src], img[src]")
 
         image_url = None
 
         if image is not None:
-            src = image.get("src")
+            src = image.get("data-src") or image.get("src")
 
             if src:
                 image_url = urljoin(
@@ -292,7 +295,7 @@ class OfficialHMTScraper:
             image_url=image_url,
             in_stock=in_stock,
             availability=self._availability(card, in_stock),
-            stock_count=stock_count,
+            stock_count=None if self._availability(card, in_stock) == "coming_soon" else stock_count,
             category=None,
             collection=None,
             gender=None,

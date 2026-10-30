@@ -561,6 +561,7 @@ class Tracker:
             if unknown_observation:
                 existing.last_stock_check = previous_stock_check
             self.db.save_watch(existing)
+            watch = existing
 
         matching_rules = [
             rule for rule in rules if rule.matches(watch)
@@ -577,7 +578,7 @@ class Tracker:
 
         if watch.availability == "coming_soon" and previous_availability != "coming_soon":
             should_alert = self._alert_enabled("coming_soon", True)
-            alert_type = "coming_soon"
+            alert_type = "new" if is_new else "coming_soon"
         elif is_new:
             # A newly discovered tracked watch must alert even during the
             # initial catalogue seed. This is intentionally independent of

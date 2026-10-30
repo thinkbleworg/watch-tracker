@@ -288,8 +288,13 @@
  
 --- a/notifier.py
 +++ b/notifier.py
-@@ -3,13 +3,16 @@
+@@ -1,15 +1,21 @@
+ from __future__ import annotations
+ 
  import html
++import hashlib
++from datetime import datetime
++from zoneinfo import ZoneInfo
  import logging
  import threading
 +import time
@@ -306,7 +311,7 @@
  from tracker import AlertCandidate
  
  
-@@ -43,6 +46,74 @@
+@@ -43,6 +49,74 @@
  
          self._session = requests.Session()
          self._lock = threading.Lock()
@@ -381,7 +386,7 @@
  
      @property
      def enabled(self) -> bool:
-@@ -95,7 +166,7 @@
+@@ -95,7 +169,7 @@
              except Exception as exc:
                  self.db.mark_alert_failed(
                      alert_id,
@@ -390,7 +395,7 @@
                  )
  
                  logger.exception(
-@@ -163,16 +234,7 @@
+@@ -163,16 +237,7 @@
                  alert_id = int(alert["id"])
  
                  try:
@@ -408,7 +413,7 @@
  
                      self.db.mark_alert_sent(alert_id)
  
-@@ -191,7 +253,7 @@
+@@ -191,7 +256,7 @@
  
                      self.db.mark_alert_failed(
                          alert_id,
@@ -417,27 +422,47 @@
                      )
  
                      logger.exception(
-@@ -249,13 +311,15 @@
+@@ -248,31 +313,47 @@
+         message = self._format_watch(watch, alert_type=alert_type)
  
          image_url = getattr(watch, "image_url", None)
- 
+-
 -        if image_url:
-+        if image_url and alert_type not in {"back_in_stock", "new", "tracked"}:
-             try:
-                 return self._send_photo(
-                     image_url,
-                     caption=message,
-                 )
-             except Exception as exc:
-+                if time.monotonic() < self._telegram_blocked_until:
-+                    raise
-                 # If the image URL is no longer reachable or Telegram
-                 # rejects it, fall back to the text alert rather than
-                 # losing the notification entirely.
-@@ -267,6 +331,22 @@
-                 )
- 
-         return self._send_message(message)
+-            try:
+-                return self._send_photo(
+-                    image_url,
+-                    caption=message,
+-                )
+-            except Exception as exc:
+-                # If the image URL is no longer reachable or Telegram
+-                # rejects it, fall back to the text alert rather than
+-                # losing the notification entirely.
+-                logger.warning(
+-                    "Telegram photo delivery failed for watch %s; "
+-                    "falling back to text alert: %s",
+-                    getattr(watch, "id", "unknown"),
+-                    exc,
+-                )
+-
+-        return self._send_message(message)
++        if not image_url:
++            current = self.db.get_watch(watch.id)
++            image_url = current.image_url if current else None
++        if not image_url:
++            raise RuntimeError("Watch image missing; photo alert retained for retry")
++        key = "telegram_photo_" + hashlib.sha256((self.bot_token + str(image_url)).encode()).hexdigest()
++        cached = self.db.get_setting(key, "")
++        try:
++            result = self._send_photo(cached or image_url, caption=message,
++                                      product_url=watch.product_url)
++        except requests.HTTPError as exc:
++            if cached and exc.response is not None and exc.response.status_code == 400:
++                self.db.set_setting(key, "")
++            raise
++        photos = result.get("result", {}).get("photo", [])
++        if photos and photos[-1].get("file_id"):
++            self.db.set_setting(key, photos[-1]["file_id"])
++        return result
 +
 +    def _pace(self) -> None:
 +        if time.monotonic() < self._telegram_blocked_until:
@@ -457,7 +482,14 @@
  
      def _send_photo(
          self,
-@@ -280,6 +360,7 @@
+         image_url: str,
+         *,
+         caption: str,
++        product_url: str | None = None,
+     ) -> dict[str, Any]:
+         if not self.enabled:
+             raise RuntimeError(
+@@ -280,17 +361,20 @@
                  "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."
              )
  
@@ -465,7 +497,12 @@
          response = self._session.post(
              f"{self.api_url}/sendPhoto",
              data={
-@@ -291,6 +372,7 @@
+                 "chat_id": self.chat_id,
+                 "photo": str(image_url),
+                 "caption": caption,
++                "reply_markup": json.dumps({"inline_keyboard": [[{"text": "View Product", "url": product_url}]]}) if product_url else "",
+                 "parse_mode": "HTML",
+             },
              timeout=self.timeout,
          )
  
@@ -473,7 +510,7 @@
          response.raise_for_status()
  
          try:
-@@ -316,6 +398,7 @@
+@@ -316,6 +400,7 @@
                  "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."
              )
  
@@ -481,7 +518,7 @@
          response = self._session.post(
              f"{self.api_url}/sendMessage",
              data={
-@@ -327,6 +410,7 @@
+@@ -327,6 +412,7 @@
              timeout=self.timeout,
          )
  
@@ -489,23 +526,95 @@
          response.raise_for_status()
  
          try:
-@@ -359,6 +443,7 @@
-             "back_in_stock": "🟢 <b>Back in Stock</b>",
-             "price_changed": "💰 <b>Price Changed</b>",
-             "out_of_stock": "🔴 <b>Out of Stock</b>",
-+            "coming_soon": "🟠 <b>Coming Soon</b>",
-             "repeat": "🔔 <b>HMT Tracker Alert</b>",
-             "new": "🆕 <b>New HMT Watch Found</b>",
+@@ -351,59 +437,36 @@
+         *,
+         alert_type: str,
+     ) -> str:
+-        name = html.escape(str(watch.name or "Unknown watch"))
+-        source = html.escape(self._source_label(watch.source))
+-
+         headings = {
+-            "tracked": "⌚ <b>HMT Tracker Alert</b>",
+-            "back_in_stock": "🟢 <b>Back in Stock</b>",
+-            "price_changed": "💰 <b>Price Changed</b>",
+-            "out_of_stock": "🔴 <b>Out of Stock</b>",
+-            "repeat": "🔔 <b>HMT Tracker Alert</b>",
+-            "new": "🆕 <b>New HMT Watch Found</b>",
++            "new": "🆕 NEW WATCH LISTED! 🎉", "coming_soon": "🕜 COMING SOON",
++            "out_of_stock": "❌ OUT OF STOCK", "back_in_stock": "✅ BACK IN STOCK! 🎉",
++            "price_changed": "💰 PRICE CHANGED", "tracked": "⌚ WATCH TRACKED",
++            "repeat": "🔔 STOCK UPDATE",
          }
-@@ -372,6 +457,7 @@
-             "",
-             f"<b>{name}</b>",
-             f"Source: {source}",
-+            "Checked: " + html.escape(str(getattr(watch, "last_stock_check", ""))),
-         ]
+-        heading = headings.get(
+-            alert_type,
+-            "⌚ <b>HMT Watch Alert</b>",
+-        )
+-
+-        lines = [
+-            heading,
+-            "",
+-            f"<b>{name}</b>",
+-            f"Source: {source}",
+-        ]
+-
+-        if alert_type == "out_of_stock":
+-            lines.append("Stock: <b>Out of stock</b>")
+-
+-        if getattr(watch, "model_number", None):
+-            model = html.escape(str(watch.model_number))
+-            lines.append(f"Model: {model}")
+-
+-        if getattr(watch, "sku", None):
+-            sku = html.escape(str(watch.sku))
+-            lines.append(f"SKU: {sku}")
+-
+-        price = self._format_price(getattr(watch, "price", None))
+-        if price:
+-            lines.append(f"Price: {price}")
+-
+-        stock = self._format_stock(watch)
+-
+-        if stock and alert_type != "out_of_stock":
+-            lines.append(f"Stock: <b>{html.escape(stock)}</b>")
+-
+-        if getattr(watch, "product_url", None):
+-            url = html.escape(str(watch.product_url), quote=True)
+-            lines.extend(
+-                [
+-                    "",
+-                    f'🛒 <a href="{url}">View watch</a>',
+-                ]
+-            )
+-
+-        return "\n".join(lines)
++        name = str(watch.name or "Unknown watch")[:180]
++        series = getattr(watch, "collection", None)
++        if not series:
++            series = next((x for x in ("Kohinoor", "Tareeq", "Himalaya", "Sangam", "Stellar", "Janata", "Pilot", "Kedar", "Skeleton") if x.lower() in name.lower()), "Not supplied")
++        try:
++            dt = datetime.fromisoformat(watch.last_stock_check.replace("Z", "+00:00"))
++            if dt.tzinfo is None:
++                dt = dt.replace(tzinfo=ZoneInfo("UTC"))
++            dt = dt.astimezone(ZoneInfo("Asia/Kolkata"))
++            detected = dt.strftime("%d %b %Y, %I:%M %p").replace("AM", "am").replace("PM", "pm")
++        except (ValueError, AttributeError):
++            detected = "Not supplied"
++        stock = "🕜 Coming Soon" if watch.availability == "coming_soon" else ("In stock" if watch.in_stock else "Out of stock")
++        count = watch.stock_count if watch.stock_count is not None else "Not supplied"
++        price = f"RS. {watch.price:g}" if watch.price is not None else "Not supplied"
++        site = {"hmt.in": "hmtwatches.in", "hmt.store": "hmtwatches.store"}.get(watch.source, watch.source)
++        esc = lambda value: html.escape(str(value))
++        return "\n".join([
++            "Status: <b>" + headings.get(alert_type, "⌚ WATCH UPDATE") + "</b>", "",
++            "Model: ⌚ <b>" + esc(name) + "</b>", "━━━━━━━━━━━━━",
++            "💰 Price: " + esc(price), "📦 Stock: " + stock,
++            "⌚ Series: " + esc(str(series)[:80]), "📊 Total stock: " + esc(count),
++            "🕐 Detected: " + esc(detected), "🌐 Website: " + esc(site),
++        ])
  
-         if alert_type == "out_of_stock":
-@@ -413,7 +499,7 @@
+     def _format_stored_alert(self, alert: dict[str, Any]) -> str:
+         """
+@@ -413,7 +476,7 @@
          because the catalogue may have changed since the original alert.
          """
          name = html.escape(
@@ -514,7 +623,7 @@
          )
  
          source = html.escape(
-@@ -427,15 +513,27 @@
+@@ -427,15 +490,27 @@
              f"Source: {source}",
          ]
  
@@ -544,7 +653,7 @@
  
          lines.append(f"Stock: <b>{html.escape(stock_text)}</b>")
  
-@@ -458,6 +556,8 @@
+@@ -458,6 +533,8 @@
  
      @staticmethod
      def _format_stock(watch: Any) -> str:
@@ -767,7 +876,48 @@
  from bs4 import BeautifulSoup
  
  from config import SourceConfig
-@@ -104,38 +105,8 @@
+@@ -76,20 +77,27 @@
+             RuntimeError: when the source cannot be scraped reliably.
+         """
+ 
+-        filter_html = self._post_filter_products()
+-        all_products_html = self._get_all_products()
+-
+-        watches: dict[str, Watch] = {}
+-
+-        for html in (filter_html, all_products_html):
+-            for watch in self._parse_product_cards(html):
+-                watches[watch.id] = watch
+-
++        page = self._request("GET", self.config.base_url + "/watches")
++        meta = BeautifulSoup(page.text, "html.parser").select_one('meta[name="csrf-token"]')
++        self._csrf = meta.get("content", "") if meta else ""
++        watches = {}
++        # HMT returns cumulative results. Start with three pages' worth,
++        # then extend only if the server advertises more results.
++        for count in range(3, 31):
++            html = self._post_filter_products(count)
++            parsed = self._parse_product_cards(html)
++            previous = len(watches)
++            watches.update({w.id: w for w in parsed})
++            soup = BeautifulSoup(html, "html.parser")
++            more = soup.select_one("#loadMoreBtnData")
++            if more is None:
++                break
++            if len(watches) == previous:
++                raise RuntimeError("Official catalogue pagination stopped making progress")
++        else:
++            raise RuntimeError("Official catalogue exceeded pagination safety limit")
+         if not watches:
+-            raise RuntimeError(
+-                "HMT official source returned no parseable products."
+-            )
+-
++            raise RuntimeError("Official source returned no parseable products")
+         return list(watches.values())
+ 
+     # ------------------------------------------------------------------
+@@ -104,40 +112,10 @@
      ) -> requests.Response:
          """Perform an HTTP request with simple retry handling."""
  
@@ -803,20 +953,100 @@
 -            f"HMT request failed after {self.retries} attempts: "
 -            f"{method} {url}"
 -        ) from last_error
+-
+-    def _post_filter_products(self) -> str:
 +        return paced_request(self.session, method, url,
 +                             timeout=self.timeout_seconds, retries=self.retries, **kwargs)
- 
-     def _post_filter_products(self) -> str:
++
++    def _post_filter_products(self, count=1) -> str:
          """Fetch the main filtered product listing."""
-@@ -320,6 +291,7 @@
+ 
+         url = urljoin(
+@@ -145,24 +123,13 @@
+             "/filter_products",
+         )
+ 
+-        # These are intentionally conservative defaults.
+-        #
+-        # The website's frontend sends filtering/pagination information
+-        # to /filter_products. Leaving the actual filters empty asks the
+-        # server for the broad catalogue.
++        # -1 is the frontend's "Include out of Stock" value. Coming Soon
++        # also appears with 0, but 0 alone does not establish OOS coverage.
+         data = {
+-            "load_more_count": "0",
++            "load_more_count": str(count),
++            "availability_filter": "-1",
++            "brand_filter": "",
+             "menu_val": "",
+-            "price": "",
+-            "availability": "",
+-            "gender": "",
+-            "discount": "",
+-            "brand": "",
+-            "strap_color": "",
+-            "dial_color": "",
+-            "function": "",
+-            "collection": "",
+-            "movement": "",
+         }
+ 
+         response = self._request(
+@@ -171,11 +138,18 @@
+             data=data,
+             headers={
+                 "X-Requested-With": "XMLHttpRequest",
++                "X-CSRF-TOKEN": getattr(self, "_csrf", ""),
+                 "Referer": self.config.base_url + "/watches",
+             },
+         )
+ 
+-        return response.text
++        try:
++            payload = response.json()
++        except ValueError:
++            return response.text
++        if not isinstance(payload, dict) or not isinstance(payload.get("html"), str):
++            raise RuntimeError("Official catalogue JSON missing html field")
++        return payload["html"]
+ 
+     def _get_all_products(self) -> str:
+         """Fetch the site's all-products page."""
+@@ -259,7 +233,7 @@
+             return None
+ 
+         name = self._clean_text(
+-            name_element.get_text(" ", strip=True)
++            name_element.get("title") or name_element.get_text(" ", strip=True)
+         )
+ 
+         if not name:
+@@ -282,12 +256,12 @@
+             product_link.get("href", ""),
+         )
+ 
+-        image = card.select_one("img[src]")
++        image = card.select_one("img[data-src], img[src]")
+ 
+         image_url = None
+ 
+         if image is not None:
+-            src = image.get("src")
++            src = image.get("data-src") or image.get("src")
+ 
+             if src:
+                 image_url = urljoin(
+@@ -320,7 +294,8 @@
              product_url=product_url,
              image_url=image_url,
              in_stock=in_stock,
+-            stock_count=stock_count,
 +            availability=self._availability(card, in_stock),
-             stock_count=stock_count,
++            stock_count=None if self._availability(card, in_stock) == "coming_soon" else stock_count,
              category=None,
              collection=None,
-@@ -329,6 +301,14 @@
+             gender=None,
+@@ -329,6 +304,14 @@
      # ------------------------------------------------------------------
      # Stock
      # ------------------------------------------------------------------
@@ -831,7 +1061,7 @@
  
      def _parse_stock(
          self,
-@@ -343,6 +323,10 @@
+@@ -343,6 +326,10 @@
            purchasable products.
          - `add_cart(id, '1')` is present on purchasable cards.
          """
@@ -1058,34 +1288,106 @@
          out_of_stock: document.getElementById("alert-out-of-stock").checked,
 --- a/tests/test_notifier.py
 +++ b/tests/test_notifier.py
-@@ -48,7 +48,7 @@
+@@ -1,5 +1,6 @@
+ 
+ from types import SimpleNamespace
++import pytest
+ 
+ from database import Database
+ from models import Watch
+@@ -48,7 +49,7 @@
      )
  
  
 -def test_watch_alert_sends_image_before_details(tmp_path):
-+def test_urgent_alert_sends_text_without_waiting_for_image(tmp_path):
++def test_urgent_alert_sends_photo(tmp_path):
      db = Database(str(tmp_path / "test.db"))
      notifier = TelegramNotifier(
          db,
-@@ -69,13 +69,12 @@
+@@ -71,9 +72,8 @@
  
-     call = session.calls[0]
- 
--    assert call["url"].endswith("/sendPhoto")
-+    assert call["url"].endswith("/sendMessage")
+     assert call["url"].endswith("/sendPhoto")
      assert call["data"]["chat_id"] == "chat"
 -    assert call["data"]["photo"] == "https://example.com/gandaberunda.jpg"
--    assert "<b>HMT Men Gandaberunda</b>" in call["data"]["caption"]
+     assert "<b>HMT Men Gandaberunda</b>" in call["data"]["caption"]
 -    assert "Source:" in call["data"]["caption"]
--    assert "Price:" in call["data"]["caption"]
--    assert "Stock:" in call["data"]["caption"]
-+    assert "<b>HMT Men Gandaberunda</b>" in call["data"]["text"]
-+    assert "Source:" in call["data"]["text"]
-+    assert "Price:" in call["data"]["text"]
-+    assert "Stock:" in call["data"]["text"]
++    assert "Website:" in call["data"]["caption"]
+     assert "Price:" in call["data"]["caption"]
+     assert "Stock:" in call["data"]["caption"]
+ 
+@@ -92,14 +92,9 @@
+     watch = make_watch()
+     watch.image_url = None
+ 
+-    notifier._send_watch_message(
+-        watch,
+-        alert_type="repeat",
+-    )
+-
+-    assert len(session.calls) == 1
+-    assert session.calls[0]["url"].endswith("/sendMessage")
+-    assert "<b>HMT Men Gandaberunda</b>" in session.calls[0]["data"]["text"]
++    with pytest.raises(RuntimeError, match="image missing"):
++        notifier._send_watch_message(watch, alert_type="repeat")
++    assert not session.calls
  
  
- def test_watch_without_image_falls_back_to_text(tmp_path):
+ def test_retry_uses_current_watch_image(tmp_path):
+--- a/tests/test_photo_discovery.py
++++ b/tests/test_photo_discovery.py
+@@ -0,0 +1,52 @@
++import json
++from unittest.mock import Mock
++from config import get_source
++from scrapers.hmt_official import OfficialHMTScraper
++from tests.test_notifier import make_watch, FakeSession, FakeResponse
++from notifier import TelegramNotifier
++from database import Database
++
++
++def test_json_filter_includes_unavailable():
++    s=OfficialHMTScraper(get_source('hmt.in'))
++    s._request=Mock(return_value=Mock(json=lambda:{'html':'<div>Coming Soon</div>'}))
++    assert 'Coming Soon' in s._post_filter_products(2)
++    assert s._request.call_args.kwargs['data']['availability_filter']=='-1'
++    assert s._request.call_args.kwargs['data']['load_more_count']=='2'
++
++
++def test_load_more_discovers_later_coming_soon():
++    s=OfficialHMTScraper(get_source('hmt.in'))
++    s._request=Mock(return_value=Mock(text=''))
++    s._post_filter_products=Mock(side_effect=['<button id="loadMoreBtnData"></button>','done'])
++    a=make_watch(); b=make_watch(); b.id='later'; b.availability='coming_soon'
++    s._parse_product_cards=Mock(side_effect=[[a],[a,b]])
++    assert len(s.scrape())==2
++    assert [c.args[0] for c in s._post_filter_products.call_args_list] == [3, 4]
++
++
++def test_image_cached_and_button_and_timezone(tmp_path):
++    db=Database(tmp_path/'test.db');n=TelegramNotifier(db,bot_token='token',chat_id='chat')
++    session=FakeSession(); n._session=session;n._pace=lambda:None
++    w=make_watch();w.last_stock_check='2026-10-30T06:54:00+00:00'
++    original=session.post
++    def post(*a,**kw):
++        original(*a,**kw)
++        return FakeResponse({'ok':True,'result':{'photo':[{'file_id':'cached-photo'}]}})
++    session.post=post
++    n._send_watch_message(w,alert_type='new')
++    n._send_watch_message(w,alert_type='back_in_stock')
++    assert session.calls[1]['data']['photo']=='cached-photo'
++    data=session.calls[0]['data']
++    assert '30 Oct 2026, 12:24 pm' in data['caption']
++    assert 'NEW WATCH LISTED' in data['caption']
++    assert json.loads(data['reply_markup'])['inline_keyboard'][0][0]['url']==w.product_url
++
++
++def test_three_page_response_without_more_stops_immediately():
++    s=OfficialHMTScraper(get_source('hmt.in'))
++    s._request=Mock(return_value=Mock(text=''))
++    s._post_filter_products=Mock(return_value='<div>complete</div>')
++    s._parse_product_cards=Mock(return_value=[make_watch()])
++    assert len(s.scrape()) == 1
++    s._post_filter_products.assert_called_once_with(3)
 --- a/tests/test_priority_scheduler.py
 +++ b/tests/test_priority_scheduler.py
 @@ -0,0 +1,63 @@
@@ -1246,20 +1548,20 @@
 +
 +def test_outbox_sends_snapshot_even_if_current_stock_changed(tmp_path):
 +    db = db_at(tmp_path)
-+    watch = make_watch(); db.save_watch(watch)
++    watch = make_watch(); watch.image_url = "https://example.com/watch.jpg"; db.save_watch(watch)
 +    db.create_alert(watch=watch, alert_type='back_in_stock')
 +    watch.in_stock = False; watch.availability = 'out_of_stock'; db.save_watch(watch)
 +    notifier = TelegramNotifier(db, bot_token='token', chat_id='chat')
 +    notifier._session = FakeSession()
 +    assert notifier.deliver_due() == 1
-+    text = notifier._session.calls[0]['data']['text']
-+    assert 'Back in Stock' in text and '5 available' in text
++    text = notifier._session.calls[0]['data']['caption']
++    assert 'BACK IN STOCK' in text and 'Total stock: 5' in text
 +    assert db.get_alerts()[0]['status'] == 'sent'
 +
 +
 +def test_outbox_failure_is_deferred(tmp_path):
 +    db = db_at(tmp_path)
-+    watch = make_watch(); db.save_watch(watch)
++    watch = make_watch(); watch.image_url = "https://example.com/watch.jpg"; db.save_watch(watch)
 +    db.create_alert(watch=watch, alert_type='back_in_stock')
 +    notifier = TelegramNotifier(db, bot_token='token', chat_id='chat')
 +    notifier._session = Mock(); notifier._session.post.side_effect = requests.Timeout()
@@ -1451,7 +1753,7 @@
  
      # ------------------------------------------------------------------
      # Watch processing
-@@ -523,14 +542,24 @@
+@@ -523,15 +542,26 @@
  
          existing = None if is_new else self.db.get_watch(watch.id)
  
@@ -1474,9 +1776,11 @@
 +            if unknown_observation:
 +                existing.last_stock_check = previous_stock_check
              self.db.save_watch(existing)
++            watch = existing
  
          matching_rules = [
-@@ -543,7 +572,13 @@
+             rule for rule in rules if rule.matches(watch)
+@@ -543,7 +573,13 @@
          alert_type: str | None = None
          should_alert = False
  
@@ -1486,12 +1790,12 @@
 +
 +        if watch.availability == "coming_soon" and previous_availability != "coming_soon":
 +            should_alert = self._alert_enabled("coming_soon", True)
-+            alert_type = "coming_soon"
++            alert_type = "new" if is_new else "coming_soon"
 +        elif is_new:
              # A newly discovered tracked watch must alert even during the
              # initial catalogue seed. This is intentionally independent of
              # the UI's "silent seed" setting for untracked watches.
-@@ -552,18 +587,14 @@
+@@ -552,18 +588,14 @@
                      "new_products",
                      self.config.alert_new_products_only,
                  )
@@ -1512,7 +1816,7 @@
                  should_alert = self._alert_enabled(
                      "out_of_stock",
                      self.config.alert_out_of_stock,
-@@ -575,10 +606,6 @@
+@@ -575,10 +607,6 @@
                      self._alert_enabled(
                          "back_in_stock",
                          self.config.alert_back_in_stock,
