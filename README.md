@@ -423,3 +423,13 @@ The default policy is intentionally conservative:
         no alert by default
 
 This can be expanded later without changing the basic catalogue model.
+---
+
+## Optional WhatsApp Channel notifications
+
+The tracker supports independent Telegram and WhatsApp Channel delivery via
+self-hosted WAHA Core (2026.6.1 or later), including images and captions.
+WhatsApp is disabled by default and does not replay historical alerts.
+See [WHATSAPP_SETUP.md](WHATSAPP_SETUP.md) for the full deployment, migration,
+security, Channel linking, testing and rollback guide. Existing Telegram
+credentials and delivery behavior remain unchanged.

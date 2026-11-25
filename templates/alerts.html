@@ -3,7 +3,7 @@
 {% block title %}Alerts{% endblock %}
 {% block page_title %}Alerts{% endblock %}
 {% block page_subtitle %}
-    Telegram notification history and delivery status.
+    Telegram and WhatsApp notification history and delivery status.
 {% endblock %}
 
 {% block content %}
@@ -665,7 +665,8 @@
                                 margin-bottom:7px;
                             "
                         >
-                            ${statusBadge(status)}
+                            <span>Telegram: ${statusBadge(status)}</span>
+                            <span>WhatsApp: ${alert.whatsapp_status === "sent" ? `<span class="badge badge-sent">Accepted</span>` : statusBadge(alert.whatsapp_status || "skipped")}</span>
 
                             <span
                                 class="badge"
@@ -719,13 +720,14 @@
                                 alert.sent_at
                                 ? `
                                     <div>
-                                        <strong>Sent:</strong>
+                                        <strong>Telegram sent:</strong>
                                         ${formatDate(alert.sent_at)}
                                     </div>
                                 `
                                 : ""
                             }
 
+                            ${alert.whatsapp_sent_at ? `<div><strong>WhatsApp accepted:</strong> ${formatDate(alert.whatsapp_sent_at)}</div>` : ""}
                             ${
                                 telegramHtml
                                 ? `
@@ -738,6 +740,7 @@
                         </div>
 
                         ${errorHtml}
+                        ${alert.whatsapp_error ? `<div style="color:var(--text-muted,#6b7280);font-size:13px;">WhatsApp: ${escape(alert.whatsapp_error)}</div>` : ""}
 
                     </div>
 

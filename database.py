@@ -25,8 +25,10 @@ class Database:
     accessing SQLite directly.
     """
 
-    def __init__(self, path: str | Path = "data/hmt_tracker.db") -> None:
+    def __init__(self, path: str | Path = "data/hmt_tracker.db", *,
+                 whatsapp_target: tuple[str, str] | None = None) -> None:
         self.path = Path(path)
+        self.whatsapp_target = whatsapp_target
 
         if self.path != Path(":memory:"):
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -265,9 +267,17 @@ class Database:
             for name, declaration in {
                 "snapshot": "TEXT", "attempts": "INTEGER NOT NULL DEFAULT 0",
                 "next_attempt_at": "REAL NOT NULL DEFAULT 0",
+                "whatsapp_status": "TEXT NOT NULL DEFAULT 'skipped'",
+                "whatsapp_session": "TEXT", "whatsapp_channel_id": "TEXT",
+                "whatsapp_attempts": "INTEGER NOT NULL DEFAULT 0",
+                "whatsapp_next_attempt_at": "REAL NOT NULL DEFAULT 0",
+                "whatsapp_message_id": "TEXT", "whatsapp_sent_at": "TEXT",
+                "whatsapp_error": "TEXT",
             }.items():
                 if name not in alert_columns:
                     db.execute(f"ALTER TABLE alerts ADD COLUMN {name} {declaration}")
+            db.execute("""CREATE INDEX IF NOT EXISTS idx_alerts_whatsapp_due
+                ON alerts(whatsapp_session, whatsapp_channel_id, whatsapp_status, whatsapp_next_attempt_at)""")
 
     # ------------------------------------------------------------------
     # Watches / catalogue
@@ -783,9 +793,9 @@ class Database:
                     status,
                     telegram_chat_id,
                     error,
-                    created_at, snapshot
+                    created_at, snapshot, whatsapp_status, whatsapp_session, whatsapp_channel_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     watch.id,
@@ -800,6 +810,8 @@ class Database:
                     error,
                     utc_now(),
                     json.dumps(watch.to_dict()),
+                    "pending" if self.whatsapp_target else "skipped",
+                    *(self.whatsapp_target or (None, None)),
                 ),
             )
 

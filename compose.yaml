@@ -1,0 +1,29 @@
+# Optional combined deployment. Existing tracker installations may run only waha.
+services:
+  waha:
+    image: ${WAHA_IMAGE:-devlikeapro/waha:latest}
+    restart: unless-stopped
+    env_file: .env.waha
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - waha-sessions:/app/.sessions
+    networks:
+      - notifications
+    shm_size: 512mb
+  tracker:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ${TRACKER_DATA_DIR:-./data}:/app/data
+    networks:
+      - notifications
+    stop_grace_period: 90s
+networks:
+  notifications:
+    name: hmt-notifications
+volumes:
+  waha-sessions:

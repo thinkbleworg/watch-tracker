@@ -45,3 +45,11 @@ build/
 
 # Local database
 data/*.db
+# WAHA credentials, local sessions and SQLite sidecars
+.env.*
+!.env.example
+!.env.waha.example
+.sessions/
+sessions/
+data/*.db-wal
+data/*.db-shm

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import re
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -63,6 +65,39 @@ class TelegramConfig:
 
 
 @dataclass(frozen=True)
+class WhatsAppConfig:
+    """Opt-in WAHA Channel configuration; never accepts a private chat ID."""
+
+    enabled: bool = False
+    api_url: str = "http://127.0.0.1:3000"
+    api_key: str = ""
+    session: str = "default"
+    channel_id: str = ""
+    timeout_seconds: int = 45
+    min_interval_seconds: int = 3
+    max_attempts: int = 8
+    max_age_seconds: int = 3600
+
+    @property
+    def configured(self) -> bool:
+        try:
+            url = urlsplit(self.api_url)
+            return bool(
+                url.scheme in {"http", "https"} and url.hostname
+                and not (url.username or url.password or url.query or url.fragment)
+                and url.path in {"", "/"}
+                and self.api_key and re.fullmatch(r"[A-Za-z0-9_-]+", self.session)
+                and re.fullmatch(r"[0-9]+@newsletter", self.channel_id)
+            )
+        except ValueError:
+            return False
+
+    @property
+    def target(self) -> tuple[str, str] | None:
+        return (self.session, self.channel_id) if self.enabled and self.configured else None
+
+
+@dataclass(frozen=True)
 class TrackerConfig:
     """Application-wide configuration."""
 
@@ -118,6 +153,7 @@ class TrackerConfig:
     telegram: TelegramConfig = field(
         default_factory=TelegramConfig
     )
+    whatsapp: WhatsAppConfig = field(default_factory=WhatsAppConfig)
 
     # ------------------------------------------------------------------
     # Alert behaviour
@@ -258,6 +294,17 @@ def load_config() -> TrackerConfig:
         sources=sources,
 
         telegram=telegram,
+        whatsapp=WhatsAppConfig(
+            enabled=_env_bool("WHATSAPP_ENABLED", False),
+            api_url=os.getenv("WHATSAPP_API_URL", "http://127.0.0.1:3000").strip().rstrip("/"),
+            api_key=os.getenv("WHATSAPP_API_KEY", "").strip(),
+            session=os.getenv("WHATSAPP_SESSION", "default").strip(),
+            channel_id=os.getenv("WHATSAPP_CHANNEL_ID", "").strip(),
+            timeout_seconds=max(1, _env_int("WHATSAPP_TIMEOUT_SECONDS", 45)),
+            min_interval_seconds=max(1, _env_int("WHATSAPP_MIN_INTERVAL_SECONDS", 3)),
+            max_attempts=max(1, _env_int("WHATSAPP_MAX_ATTEMPTS", 8)),
+            max_age_seconds=max(60, _env_int("WHATSAPP_MAX_AGE_SECONDS", 3600)),
+        ),
 
         seed_catalogue_silently=_env_bool(
             "SEED_CATALOGUE_SILENTLY",

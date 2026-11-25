@@ -65,6 +65,13 @@
 
 
 <section class="panel">
+    <div class="panel-header">
+        <div><h2>WhatsApp Channel</h2><p>Configured through environment variables; no credentials displayed.</p></div>
+    </div>
+    <div id="whatsapp-settings">Loading WhatsApp status...</div>
+</section>
+
+<section class="panel">
 
     <div class="panel-header">
         <div>
@@ -226,6 +233,18 @@ async function loadTrackerConfig() {
         `;
 
 
+        const wa = data.whatsapp || {};
+        const counts = wa.status_counts || {};
+        document.getElementById("whatsapp-settings").innerHTML = `
+            <div class="status-row"><span class="status-row-label">WAHA notifications</span>
+            <span class="badge ${wa.enabled && wa.configured ? "badge-success" : "badge-neutral"}">
+            ${wa.enabled ? (wa.configured ? "Configured (not a connection check)" : "Configuration incomplete") : "Disabled"}</span></div>
+            <div class="status-row"><span>Pending / retrying</span><span>${Number(counts.pending || 0) + Number(counts.retrying || 0)}</span></div>
+            <div class="status-row"><span>Accepted by WAHA</span><span>${Number(counts.sent || 0)}</span></div>
+            <div class="status-row"><span>Failed / uncertain</span><span>${Number(counts.failed || 0) + Number(counts.uncertain || 0)}</span></div>
+            <div class="status-row"><span>Expired</span><span>${Number(counts.expired || 0)}</span></div>
+            <p>Use the server CLI to test or manually retry after verifying the actual Channel.</p>`;
+
         const alertConfig =
             data.alerts || {};
 
@@ -281,6 +300,7 @@ async function loadTrackerConfig() {
         `;
 
         telegram.innerHTML = "";
+        document.getElementById("whatsapp-settings").textContent = "Could not load WhatsApp status.";
         alerts.innerHTML = "";
     }
 }
