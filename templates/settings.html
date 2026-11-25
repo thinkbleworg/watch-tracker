@@ -235,15 +235,21 @@ async function loadTrackerConfig() {
 
         const wa = data.whatsapp || {};
         const counts = wa.status_counts || {};
+        const health = wa.health || {};
+        const healthLabels = {working: "Session working", checking: "Waiting for first check", disabled: "Monitoring disabled", auth_required: "Health key needs read permission", session_not_found: "Session not found", api_error: "WAHA API error", invalid_response: "Unexpected API response", unreachable: "WAHA unreachable", starting: "Session starting", scan_qr_code: "QR linking required", stopped: "Session stopped", failed: "Session failed", unknown_session_status: "Unknown session status"};
         document.getElementById("whatsapp-settings").innerHTML = `
             <div class="status-row"><span class="status-row-label">WAHA notifications</span>
             <span class="badge ${wa.enabled && wa.configured ? "badge-success" : "badge-neutral"}">
             ${wa.enabled ? (wa.configured ? "Configured (not a connection check)" : "Configuration incomplete") : "Disabled"}</span></div>
+            <div class="status-row"><span>Session health</span><span class="badge ${health.status === "working" ? "badge-success" : "badge-neutral"}">${escapeHtml(healthLabels[health.status] || "Not checked")}</span></div>
+            <div class="status-row"><span>Last check</span><span>${health.checked_at ? escapeHtml(new Date(health.checked_at).toLocaleString()) : "—"}</span></div>
+            <div class="status-row"><span>Consecutive unsuccessful checks</span><span>${Number(health.consecutive_failures || 0)}</span></div>
+            <div class="status-row"><span>Telegram service notices</span><span>${health.telegram_notices ? "Enabled" : "Disabled (operator chat not configured)"}</span></div>
             <div class="status-row"><span>Pending / retrying</span><span>${Number(counts.pending || 0) + Number(counts.retrying || 0)}</span></div>
             <div class="status-row"><span>Accepted by WAHA</span><span>${Number(counts.sent || 0)}</span></div>
             <div class="status-row"><span>Failed / uncertain</span><span>${Number(counts.failed || 0) + Number(counts.uncertain || 0)}</span></div>
             <div class="status-row"><span>Expired</span><span>${Number(counts.expired || 0)}</span></div>
-            <p>Use the server CLI to test or manually retry after verifying the actual Channel.</p>`;
+            <p>Session health does not prove Channel publication. Refresh this page for the latest check. Use the server CLI to test or manually retry after verifying the actual Channel.</p>`;
 
         const alertConfig =
             data.alerts || {};

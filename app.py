@@ -18,6 +18,7 @@ from database import Database
 from models import TrackingRule
 from notifier import TelegramNotifier
 from whatsapp_notifier import WhatsAppNotifier
+from whatsapp_health import WhatsAppHealth
 from priority_scheduler import PriorityScheduler
 from tracker import Tracker
 
@@ -50,6 +51,7 @@ telegram = TelegramNotifier(
 )
 
 whatsapp = WhatsAppNotifier(db, config.whatsapp)
+whatsapp_health = WhatsAppHealth.from_env(db, config.whatsapp, telegram)
 
 scheduler = PriorityScheduler(
     tracker,
@@ -81,6 +83,7 @@ async def lifespan(app: FastAPI):
 
     telegram.start()
     whatsapp.start()
+    whatsapp_health.start()
     scheduler.start(
         run_immediately=config.run_on_startup,
     )
@@ -89,6 +92,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         logger.info("Stopping HMT Watch Tracker")
+        whatsapp_health.stop()
         scheduler.stop()
         whatsapp.stop()
         telegram.stop()
@@ -1090,6 +1094,7 @@ def api_config() -> dict[str, Any]:
             "enabled": config.whatsapp.enabled,
             "configured": config.whatsapp.configured,
             "status_counts": whatsapp.status_counts(),
+            "health": whatsapp_health.status(),
         },
         "telegram": {
             "configured": telegram.enabled,
