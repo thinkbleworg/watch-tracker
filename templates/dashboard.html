@@ -671,7 +671,7 @@ function renderWatch(watch) {
                     image
                         ? `
                             <img
-                                src="${escapeHtml(image)}"
+                                src="${escapeHtml(safeHttpUrl(image))}"
                                 alt="${escapeHtml(name)}"
                                 loading="lazy"
                             >
@@ -723,7 +723,7 @@ function renderWatch(watch) {
             </div>
 
             <a
-                href="${escapeHtml(url)}"
+                href="${escapeHtml(safeHttpUrl(url))}"
                 target="_blank"
                 rel="noopener noreferrer"
                 class="button button-small button-secondary"

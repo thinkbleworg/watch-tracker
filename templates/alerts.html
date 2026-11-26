@@ -563,7 +563,7 @@
         if (productUrl) {
             actionHtml = `
                 <a
-                    href="${escape(productUrl)}"
+                    href="${escape(safeHttpUrl(productUrl))}"
                     target="_blank"
                     rel="noopener noreferrer"
                     class="button button-secondary button-small"

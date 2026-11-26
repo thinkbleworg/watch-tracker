@@ -1,0 +1,36 @@
+# Compose v2.24.4+; auto-loaded alongside existing compose.yaml.
+# Preserve the existing WAHA settings and tracker DB mount in compose.yaml.
+services:
+  tracker:
+    ports: !override
+      - "127.0.0.1:8080:8000"
+    environment:
+      HMT_PUBLIC_ORIGIN: https://34.10.110.32
+    networks:
+      - notifications
+      - web
+  caddy:
+    image: caddy:2.11.9-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - web
+    mem_limit: 128m
+    environment:
+      GOMEMLIMIT: 80MiB
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+networks:
+  web:
+volumes:
+  caddy-data:
+  caddy-config:

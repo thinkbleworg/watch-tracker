@@ -13,7 +13,7 @@
 
     <link
         rel="stylesheet"
-        href="{{ url_for('static', path='style.css') }}"
+        href="/static/style.css"
     >
 
     {% block head %}{% endblock %}
@@ -81,6 +81,12 @@
             </nav>
 
             <div class="sidebar-bottom">
+                <div style="padding:10px 0; font-size:13px; overflow-wrap:anywhere;">
+                    {{ request.state.identity.username }} · {{ request.state.identity.role }}
+                    <form method="post" action="/logout" style="margin-top:8px;">
+                        <button type="submit" class="button button-small button-secondary">Sign out</button>
+                    </form>
+                </div>
                 <div class="system-status">
                     <span
                         id="sidebar-status-dot"
@@ -127,6 +133,7 @@
                         Last run: —
                     </div>
 
+                    {% if request.state.identity.role == "admin" %}
                     <button
                         id="run-now-button"
                         class="button button-primary"
@@ -135,6 +142,7 @@
                     >
                         Run Now
                     </button>
+                    {% endif %}
                 </div>
             </header>
 
@@ -153,7 +161,7 @@
         </main>
     </div>
 
-    <script src="{{ url_for('static', path='app.js') }}"></script>
+    <script src="/static/app.js"></script>
 
     {% block scripts %}{% endblock %}
 </body>

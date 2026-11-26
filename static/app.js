@@ -4,6 +4,26 @@
 
 "use strict";
 
+// All existing pages use fetch; redirect after an expired session.
+const hmtFetch = window.fetch.bind(window);
+window.fetch = async (...args) => {
+    const response = await hmtFetch(...args);
+    if (response.status === 401 && new URL(response.url, window.location.href).origin === window.location.origin) {
+        window.location.assign("/login");
+    }
+    return response;
+};
+
+// Only allow web links from scraped catalogue data.
+function safeHttpUrl(value) {
+    try {
+        const url = new URL(String(value));
+        return ["https:", "http:"].includes(url.protocol) ? url.href : "#";
+    } catch (_) {
+        return "#";
+    }
+}
+
 /* ============================================================
    Tracker
    ============================================================ */

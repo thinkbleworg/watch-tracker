@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in | HMT Watch Tracker</title>
+<style>
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#eef2f6;color:#172b3d;font:15px system-ui,sans-serif;padding:20px}.panel{width:100%;max-width:410px;background:#fff;border:1px solid #dbe3eb;border-radius:16px;padding:30px;box-shadow:0 10px 36px #172b3d13}.mark{background:#176c9a;color:white;border-radius:10px;width:44px;height:44px;display:grid;place-items:center;font-weight:800;font-size:24px}h1{font-size:23px;margin:20px 0 5px}p{color:#586d7e;margin:0 0 24px}label{display:block;margin:15px 0 6px;font-weight:600}input,button{width:100%;padding:12px;border-radius:8px;font:inherit}input{border:1px solid #adbac7}button{margin-top:22px;background:#176c9a;color:#fff;border:0;font-weight:700;cursor:pointer}.error{color:#a22626;background:#fff1f1;border-radius:8px;padding:12px;margin-bottom:12px}.note{font-size:12px;margin:18px 0 0}input:focus,button:focus{outline:2px solid #176c9a;outline-offset:2px}
+</style>
+</head><body><main class="panel"><div class="mark" aria-hidden="true">H</div><h1>HMT Watch Tracker</h1><p>Sign in to your private dashboard.</p>
+{% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}
+<form method="post" action="/login"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required maxlength="64" autofocus><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256"><button type="submit">Sign in</button></form><p class="note">Access is restricted to authorized accounts.</p></main></body></html>

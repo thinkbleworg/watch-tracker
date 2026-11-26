@@ -53,3 +53,6 @@ data/*.db
 sessions/
 data/*.db-wal
 data/*.db-shm
+
+# Local production backups
+data-backup-*/

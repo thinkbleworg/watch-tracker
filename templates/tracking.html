@@ -572,7 +572,7 @@ function renderTrackingRules() {
                             <button
                                 type="button"
                                 class="button"
-                                onclick="editTrackingRule('${escapeHtml(rule.id)}')"
+                                onclick='editTrackingRule(${escapeHtml(JSON.stringify(rule.id))})'
                             >
                                 Edit
                             </button>
@@ -580,7 +580,7 @@ function renderTrackingRules() {
                             <button
                                 type="button"
                                 class="button"
-                                onclick="toggleTrackingRule('${escapeHtml(rule.id)}')"
+                                onclick='toggleTrackingRule(${escapeHtml(JSON.stringify(rule.id))})'
                             >
                                 ${enabled
                                     ? "Disable"
@@ -590,7 +590,7 @@ function renderTrackingRules() {
                             <button
                                 type="button"
                                 class="button"
-                                onclick="deleteTrackingRule('${escapeHtml(rule.id)}')"
+                                onclick='deleteTrackingRule(${escapeHtml(JSON.stringify(rule.id))})'
                             >
                                 Delete
                             </button>

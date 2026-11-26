@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from auth import AuthStore, auth_path, install_auth
 from config import config
 from database import Database
 from models import TrackingRule
@@ -104,6 +105,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+
+install_auth(app, templates, AuthStore(auth_path()))
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +307,6 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "service": "hmt-watch-tracker",
-        "scheduler_running": scheduler.running,
     }
 
 

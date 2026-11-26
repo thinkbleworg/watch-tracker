@@ -23,3 +23,10 @@ docker compose up -d waha
 docker compose run --rm --no-deps \
   -e DATABASE_PATH=/tmp/whatsapp-test.db \
   tracker python whatsapp_cli.py status
+
+
+  For Redeploy
+
+  docker compose build tracker
+
+  docker compose up -d --no-deps tracker
